@@ -110,12 +110,12 @@
 ## Planning (мой анализ)
 
 ### Gaps
-- [ ] **MVP scope не выделен** — PRD описывает полный продукт, но нет чёткой границы "что в MVP, что после". 47 user stories для первого релиза — это too much.
-- [ ] **Priority / MoSCoW** — user stories не приоритизированы. Что must-have для первой сессии?
-- [ ] **Timeline / milestones** — нет сроков. Когда MVP? Когда beta?
-- [ ] **Success metrics** — как измеряем что бот полезен? Adoption rate? % tracks rated? Session satisfaction?
-- [ ] **Rollback plan** — если бот сломается во время сессии — fallback to manual process?
-- [ ] **Onboarding plan** — 4-5 человек, но всё равно нужен: как объясняем что делать, tutorial flow.
+- [x] **MVP scope не выделен** — RESOLVED: see `mvp-scope.md`. MVP-0 = 12 stories, MVP-1 и MVP-2 определены.
+- [x] **Priority / MoSCoW** — RESOLVED: see `user-stories-prioritization.md`. All 47 stories categorized.
+- [x] **Timeline / milestones** — RESOLVED: see `milestones-and-metrics.md`. 5 milestones (M0-M5) defined.
+- [x] **Success metrics** — RESOLVED: see `milestones-and-metrics.md`. Metrics per MVP phase.
+- [x] **Rollback plan** — RESOLVED: see `milestones-and-metrics.md`. Fallback to manual voting if bot fails.
+- [ ] **Onboarding plan** — 4-5 человек, но всё равно нужен: как объясняем что делать, tutorial flow. Deferred to MVP-1.
 
 ### Risks
 - [ ] **Scope creep** — 47 stories + AI + real-time + Mini App = огромный scope для pet project. Риск заброса.
