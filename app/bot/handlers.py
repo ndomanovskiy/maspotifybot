@@ -286,14 +286,18 @@ async def cmd_session(message: Message):
         _active_playlist_id = playlist_id
         _played_track_ids = set()
 
-    # Get playlist name + clear queue
+    # Get playlist name + clear queue by starting playlist and pausing
     try:
         sp = await get_spotify()
         pl = await sp.playlist(playlist_id)
         playlist_name = pl.name
-        # Clear Spotify queue by starting playlist and immediately pausing
-        # This resets the queue to the playlist contents
-    except Exception:
+        # Start playlist context to reset queue, then pause immediately
+        await sp.playback_start_context(f"spotify:playlist:{playlist_id}")
+        await asyncio.sleep(0.5)
+        await sp.playback_pause()
+        log.info(f"Queue cleared for playlist {playlist_name}")
+    except Exception as e:
+        log.warning(f"Failed to clear queue: {e}")
         playlist_name = playlist_id
 
     # Notify all registered users
@@ -336,11 +340,11 @@ async def on_start_listening(callback: CallbackQuery):
         await callback.answer("Нет активной сессии!")
         return
 
-    # Start playlist in Spotify with shuffle
+    # Enable shuffle and resume playback (playlist already loaded at /session)
     try:
         sp = await get_spotify()
         await sp.playback_shuffle(True)
-        await sp.playback_start_context(f"spotify:playlist:{_active_playlist_id}")
+        await sp.playback_resume()
     except Exception as e:
         log.error(f"Failed to start playback: {e}")
         await callback.answer(f"Ошибка Spotify: {e}")
@@ -407,6 +411,13 @@ async def _end_session():
             """,
             session_id_to_end,
         )
+
+    # Show loading animation
+    for tid in _participants:
+        try:
+            await bot.send_chat_action(tid, "typing")
+        except Exception:
+            pass
 
     recap = (
         f"📊 <b>Сессия завершена!</b>\n\n"
@@ -507,6 +518,11 @@ async def _on_track_change(info: TrackInfo):
             if row:
                 added_by_name = row["telegram_name"]
 
+    # Build links
+    track_url = f"https://open.spotify.com/track/{info.track_id}"
+    artist_name = info.artist.split(",")[0].strip()  # first artist for search link
+    artist_search_url = f"https://open.spotify.com/search/{artist_name.replace(' ', '%20')}"
+
     if added_by_name:
         added_by_text = f"\n👤 {added_by_name}"
     elif info.added_by:
@@ -514,11 +530,34 @@ async def _on_track_change(info: TrackInfo):
     else:
         added_by_text = ""
 
-    # Generate AI facts (async, don't block)
-    facts = await generate_track_facts(info.title, info.artist, info.album)
+    # Check cached AI facts first, then generate
+    cached_facts = None
+    async with _pool.acquire() as conn:
+        cached_facts = await conn.fetchval(
+            "SELECT ai_facts FROM playlist_tracks WHERE spotify_track_id = $1 AND ai_facts IS NOT NULL LIMIT 1",
+            info.track_id,
+        )
+
+    if cached_facts:
+        facts = cached_facts
+    else:
+        facts = await generate_track_facts(info.title, info.artist, info.album)
+        # Cache for future
+        if facts:
+            async with _pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE playlist_tracks SET ai_facts = $1 WHERE spotify_track_id = $2",
+                    facts, info.track_id,
+                )
+
     facts_text = f"\n\n💡 {facts}" if facts else ""
 
-    text = f"🎵 <b>{info.title}</b>\n🎤 {info.artist}\n💿 {info.album}{added_by_text}{facts_text}"
+    text = (
+        f"🎵 <a href=\"{track_url}\"><b>{info.title}</b></a>\n"
+        f"🎤 <a href=\"{artist_search_url}\">{info.artist}</a>\n"
+        f"💿 {info.album}"
+        f"{added_by_text}{facts_text}"
+    )
 
     vote_row = [
         InlineKeyboardButton(text="✅ Keep", callback_data=f"vote:keep:{session_track_id}"),
@@ -601,15 +640,6 @@ async def on_vote(callback: CallbackQuery):
     # Update buttons with counts
     await _update_vote_buttons(session_track_id)
 
-    # Offer rating after vote
-    rate_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⭐ Оценить трек", callback_data=f"rate_start:{session_track_id}")
-    ]])
-    try:
-        await callback.message.reply("Хочешь оценить?", reply_markup=rate_kb)
-    except Exception:
-        pass
-
     # Drop — remove + skip immediately
     if result["status"] == "dropped":
         for tid in _participants:
@@ -636,7 +666,7 @@ async def on_vote(callback: CallbackQuery):
     if result["total_votes"] >= len(_participants):
         for tid in _participants:
             try:
-                await bot.send_message(tid, "✅ Все проголосовали — следующий трек!", parse_mode="HTML")
+                await bot.send_message(tid, "✅ Все проголосовали!", parse_mode="HTML")
             except Exception:
                 pass
         await skip_to_next()
@@ -650,80 +680,6 @@ async def on_skip(callback: CallbackQuery):
 
     await callback.answer("⏭ Скипаю...")
     await skip_to_next()
-
-
-RATING_CRITERIA = [
-    ("rhymes", "Рифмы/Образы"),
-    ("structure", "Структура/Ритмика"),
-    ("style", "Реализация стиля"),
-    ("charisma", "Индивидуальность"),
-    ("vibe", "Атмосфера/Вайб"),
-]
-
-
-@dp.callback_query(F.data.startswith("rate_start:"))
-async def on_rate_start(callback: CallbackQuery):
-    session_track_id = int(callback.data.split(":")[1])
-    # Show first criterion
-    await callback.answer()
-    await _send_rating_step(callback.from_user.id, session_track_id, 0, {})
-
-
-async def _send_rating_step(chat_id: int, session_track_id: int, step: int, scores: dict):
-    """Send rating buttons for one criterion."""
-    if step >= len(RATING_CRITERIA):
-        # All rated — save to DB
-        async with _pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO ratings (session_track_id, telegram_id, rhymes, structure, style, charisma, vibe)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (session_track_id, telegram_id) DO UPDATE
-                SET rhymes=$3, structure=$4, style=$5, charisma=$6, vibe=$7, rated_at=NOW()
-                """,
-                session_track_id, chat_id,
-                scores.get("rhymes", 3), scores.get("structure", 3),
-                scores.get("style", 3), scores.get("charisma", 3), scores.get("vibe", 3),
-            )
-        stars = " ".join(f"{v}⭐" for v in scores.values())
-        await bot.send_message(chat_id, f"✅ Оценка сохранена: {stars}")
-        return
-
-    key, label = RATING_CRITERIA[step]
-    # Encode scores in callback data: rate:track_id:step:score1,score2,...
-    scores_str = ",".join(str(scores.get(RATING_CRITERIA[i][0], 0)) for i in range(step))
-    buttons = []
-    for star in range(1, 6):
-        buttons.append(InlineKeyboardButton(
-            text=f"{'⭐' * star}",
-            callback_data=f"rate:{session_track_id}:{step}:{scores_str}{',' if scores_str else ''}{star}",
-        ))
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[buttons])
-    await bot.send_message(chat_id, f"🎯 <b>{label}</b> (1-5):", reply_markup=kb, parse_mode="HTML")
-
-
-@dp.callback_query(F.data.startswith("rate:"))
-async def on_rate(callback: CallbackQuery):
-    parts = callback.data.split(":")
-    # rate:track_id:step:scores_csv
-    session_track_id = int(parts[1])
-    step = int(parts[2])
-    scores_csv = parts[3] if len(parts) > 3 else ""
-    score_values = [int(x) for x in scores_csv.split(",") if x]
-
-    # Rebuild scores dict
-    scores = {}
-    for i, val in enumerate(score_values):
-        scores[RATING_CRITERIA[i][0]] = val
-
-    await callback.answer()
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
-    await _send_rating_step(callback.from_user.id, session_track_id, step + 1, scores)
 
 
 @dp.callback_query(F.data.startswith("approve:"))
@@ -935,19 +891,23 @@ async def setup_bot(pool: asyncpg.Pool):
     # Start duplicate watcher in background
     global _on_duplicate_notify
     async def on_duplicate_found(telegram_id, track_title, artist, duplicates, playlist_name, track_id=None):
-        lines = []
-        for d in duplicates:
-            match_type = "🎯 точное" if d["match"] == "exact" else "🔗 ISRC"
-            lines.append(f"  {match_type} — {d['playlist']}")
-        dup_text = "\n".join(lines)
         dup_links = []
         for d in duplicates:
             match_type = "🎯 точное" if d["match"] == "exact" else "🔗 ISRC"
             dup_links.append(f"  {match_type} — <a href=\"{d['url']}\">{d['playlist']}</a>")
         dup_text = "\n".join(dup_links)
+
         track_link = f"https://open.spotify.com/track/{track_id}" if track_id else ""
         track_display = f"<a href=\"{track_link}\">{track_title}</a>" if track_id else track_title
-        msg = f"🗑 <b>Дубликат удалён!</b>\n\n🎵 {track_display} — {artist}\nУдалён из: {playlist_name}\n\nУже был:\n{dup_text}"
+        artist_search = f"https://open.spotify.com/search/{artist.replace(' ', '%20')}"
+        artist_display = f"<a href=\"{artist_search}\">{artist}</a>"
+
+        # Get playlist URL for where it was removed from
+        async with pool.acquire() as conn:
+            pl_row = await conn.fetchrow("SELECT url FROM playlists WHERE name = $1", playlist_name)
+        removed_from = f"<a href=\"{pl_row['url']}\">{playlist_name}</a>" if pl_row and pl_row["url"] else playlist_name
+
+        msg = f"🗑 <b>Дубликат удалён!</b>\n\n🎵 {track_display} — {artist_display}\nУдалён из: {removed_from}\n\nУже был:\n{dup_text}"
 
         if telegram_id:
             try:

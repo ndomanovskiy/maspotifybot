@@ -6,6 +6,7 @@ import asyncpg
 
 from app.spotify.auth import get_spotify
 from app.services.playlists import check_duplicate, get_track_isrc
+from app.services.ai import generate_track_facts
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,9 @@ class DuplicateWatcher:
 
         # Load known tracks from DB
         await self._load_known_tracks()
+
+        # Wait a bit for Spotify auth to load
+        await asyncio.sleep(5)
 
         while self._running:
             try:
@@ -119,6 +123,9 @@ class DuplicateWatcher:
 
                 added_by = item.added_by.id if item.added_by else None
 
+                track_artist = ", ".join(a.name for a in track.artists)
+                track_album = track.album.name if track.album else ""
+
                 async with self._pool.acquire() as conn:
                     try:
                         await conn.execute(
@@ -128,11 +135,28 @@ class DuplicateWatcher:
                             ON CONFLICT (playlist_id, spotify_track_id) DO NOTHING
                             """,
                             playlist_db_id, track.id, isrc,
-                            track.name, ", ".join(a.name for a in track.artists),
+                            track.name, track_artist,
                             added_by, item.added_at if hasattr(item, "added_at") else None,
                         )
                     except Exception as e:
                         log.warning(f"Failed to save new track: {e}")
+
+                    # Pre-generate and cache AI facts
+                    existing_facts = await conn.fetchval(
+                        "SELECT ai_facts FROM playlist_tracks WHERE spotify_track_id = $1 AND ai_facts IS NOT NULL LIMIT 1",
+                        track.id,
+                    )
+                    if not existing_facts:
+                        try:
+                            facts = await generate_track_facts(track.name, track_artist, track_album)
+                            if facts:
+                                await conn.execute(
+                                    "UPDATE playlist_tracks SET ai_facts = $1 WHERE spotify_track_id = $2 AND ai_facts IS NULL",
+                                    facts, track.id,
+                                )
+                                log.info(f"Cached AI facts for '{track.name}'")
+                        except Exception as e:
+                            log.warning(f"Failed to cache facts for '{track.name}': {e}")
 
                 # Check for duplicates in OTHER playlists
                 if not isrc:

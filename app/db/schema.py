@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS playlist_tracks (
     artist TEXT NOT NULL,
     added_by_spotify_id TEXT,
     added_at TIMESTAMPTZ,
+    ai_facts TEXT,
     UNIQUE (playlist_id, spotify_track_id)
 );
 
