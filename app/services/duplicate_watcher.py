@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 class DuplicateWatcher:
     def __init__(self, pool: asyncpg.Pool, notify_callback):
         self._pool = pool
-        self._notify = notify_callback  # async fn(telegram_id, track_title, artist, duplicates)
+        self._notify = notify_callback  # async fn(telegram_id, track_title, artist, duplicates, playlist_name, track_id)
         self._running = False
         self._known_tracks: dict[str, set[str]] = {}  # playlist_spotify_id -> set of track_ids
 
@@ -143,6 +143,16 @@ class DuplicateWatcher:
                 duplicates = [d for d in duplicates if d["playlist"] != pl["name"]]
 
                 if duplicates:
+                    # Check if current playlist is thematic
+                    async with self._pool.acquire() as conn:
+                        is_thematic = await conn.fetchval(
+                            "SELECT is_thematic FROM playlists WHERE id = $1", playlist_db_id
+                        )
+
+                    if is_thematic:
+                        # Thematic playlists allow duplicates — skip silently
+                        continue
+
                     # Find who added it (Telegram ID)
                     telegram_id = None
                     if added_by:
@@ -153,12 +163,28 @@ class DuplicateWatcher:
                             if row:
                                 telegram_id = row["telegram_id"]
 
+                    # Auto-remove from playlist
+                    try:
+                        await sp.playlist_remove(playlist_spotify_id, [f"spotify:track:{track.id}"])
+                        log.info(f"Auto-removed duplicate {track.name} from {pl['name']}")
+                    except Exception as e:
+                        log.error(f"Failed to auto-remove duplicate: {e}")
+
+                    # Remove from DB too
+                    async with self._pool.acquire() as conn:
+                        await conn.execute(
+                            "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
+                            playlist_db_id, track.id,
+                        )
+                    known.discard(track.id)
+
                     await self._notify(
                         telegram_id=telegram_id,
                         track_title=track.name,
                         artist=", ".join(a.name for a in track.artists),
                         duplicates=duplicates,
                         playlist_name=pl["name"],
+                        track_id=track.id,
                     )
 
             log.debug(f"Checked playlist {pl['name']}: {len(known)} tracks tracked")

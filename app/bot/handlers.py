@@ -144,6 +144,22 @@ async def cmd_check(message: Message):
         await message.answer("✅ Трек не найден в базе — можно добавлять!")
 
 
+@dp.message(Command("scan"))
+async def cmd_scan(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ.")
+        return
+
+    await message.answer("🔍 Сканирую плейлисты на дубликаты...")
+    try:
+        watcher = DuplicateWatcher(_pool, _on_duplicate_notify)
+        await watcher._load_known_tracks()
+        await watcher._check_playlists()
+        await message.answer("✅ Сканирование завершено!")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
 @dp.message(Command("import_all"))
 async def cmd_import_all(message: Message):
     if not is_admin(message.from_user.id):
@@ -803,13 +819,21 @@ async def setup_bot(pool: asyncpg.Pool):
     await load_token_from_db(pool)
 
     # Start duplicate watcher in background
-    async def on_duplicate_found(telegram_id, track_title, artist, duplicates, playlist_name):
+    global _on_duplicate_notify
+    async def on_duplicate_found(telegram_id, track_title, artist, duplicates, playlist_name, track_id=None):
         lines = []
         for d in duplicates:
             match_type = "🎯 точное" if d["match"] == "exact" else "🔗 ISRC"
             lines.append(f"  {match_type} — {d['playlist']}")
         dup_text = "\n".join(lines)
-        msg = f"⚠️ <b>Дубликат!</b>\n\n🎵 {track_title} — {artist}\nДобавлен в: {playlist_name}\n\nУже был:\n{dup_text}"
+        dup_links = []
+        for d in duplicates:
+            match_type = "🎯 точное" if d["match"] == "exact" else "🔗 ISRC"
+            dup_links.append(f"  {match_type} — <a href=\"{d['url']}\">{d['playlist']}</a>")
+        dup_text = "\n".join(dup_links)
+        track_link = f"https://open.spotify.com/track/{track_id}" if track_id else ""
+        track_display = f"<a href=\"{track_link}\">{track_title}</a>" if track_id else track_title
+        msg = f"🗑 <b>Дубликат удалён!</b>\n\n🎵 {track_display} — {artist}\nУдалён из: {playlist_name}\n\nУже был:\n{dup_text}"
 
         if telegram_id:
             try:
@@ -823,6 +847,7 @@ async def setup_bot(pool: asyncpg.Pool):
             except Exception:
                 pass
 
+    _on_duplicate_notify = on_duplicate_found
     watcher = DuplicateWatcher(pool, on_duplicate_found)
     asyncio.create_task(watcher.start())
 
