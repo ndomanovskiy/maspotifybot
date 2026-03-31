@@ -156,7 +156,6 @@ async def cmd_scan(message: Message):
     await message.answer("🔍 Сканирую плейлисты на дубликаты...")
     try:
         watcher = DuplicateWatcher(_pool, _on_duplicate_notify)
-        await watcher._load_known_tracks()
         await watcher._check_playlists()
         await message.answer("✅ Сканирование завершено!")
     except Exception as e:

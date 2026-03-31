@@ -16,14 +16,10 @@ class DuplicateWatcher:
         self._pool = pool
         self._notify = notify_callback  # async fn(telegram_id, track_title, artist, duplicates, playlist_name, track_id)
         self._running = False
-        self._known_tracks: dict[str, set[str]] = {}  # playlist_spotify_id -> set of track_ids
 
     async def start(self):
         self._running = True
         log.info("Duplicate watcher started")
-
-        # Load known tracks from DB
-        await self._load_known_tracks()
 
         # Wait a bit for Spotify auth to load
         await asyncio.sleep(5)
@@ -32,6 +28,7 @@ class DuplicateWatcher:
             try:
                 interval = self._get_interval()
                 await self._check_playlists()
+                await self._generate_missing_facts()
                 await asyncio.sleep(interval)
             except Exception as e:
                 log.error(f"Duplicate watcher error: {e}")
@@ -62,23 +59,43 @@ class DuplicateWatcher:
 
         return 43200  # default
 
-    async def _load_known_tracks(self):
-        """Load all known tracks from DB to avoid false positives."""
+    async def _get_known_track_ids(self, playlist_db_id: int) -> set[str]:
+        """Load all known track IDs for a playlist from DB in one query."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
+                "SELECT spotify_track_id FROM playlist_tracks WHERE playlist_id = $1",
+                playlist_db_id,
+            )
+        return {row["spotify_track_id"] for row in rows}
+
+    async def _generate_missing_facts(self):
+        """Generate AI facts for upcoming playlist tracks that don't have them yet."""
+        async with self._pool.acquire() as conn:
+            tracks = await conn.fetch(
                 """
-                SELECT p.spotify_id as playlist_spotify_id, pt.spotify_track_id
-                FROM playlist_tracks pt JOIN playlists p ON pt.playlist_id = p.id
-                WHERE p.status IN ('active', 'upcoming')
+                SELECT pt.id, pt.spotify_track_id, pt.title, pt.artist
+                FROM playlist_tracks pt
+                JOIN playlists p ON pt.playlist_id = p.id
+                WHERE p.status = 'upcoming' AND pt.ai_facts IS NULL
                 """
             )
-        for row in rows:
-            pid = row["playlist_spotify_id"]
-            if pid not in self._known_tracks:
-                self._known_tracks[pid] = set()
-            self._known_tracks[pid].add(row["spotify_track_id"])
 
-        log.info(f"Loaded known tracks for {len(self._known_tracks)} playlists")
+        if not tracks:
+            return
+
+        log.info(f"Generating AI facts for {len(tracks)} tracks")
+        async with self._pool.acquire() as conn:
+            for t in tracks:
+                try:
+                    facts = await generate_track_facts(t["title"], t["artist"], "")
+                    if facts:
+                        await conn.execute(
+                            "UPDATE playlist_tracks SET ai_facts = $1 WHERE id = $2",
+                            facts, t["id"],
+                        )
+                        log.info(f"Generated facts for '{t['title']}'")
+                except Exception as e:
+                    log.warning(f"Failed to generate facts for '{t['title']}': {e}")
 
     async def _check_playlists(self):
         """Check active/upcoming playlists for new tracks and detect duplicates."""
@@ -93,10 +110,8 @@ class DuplicateWatcher:
             playlist_spotify_id = pl["spotify_id"]
             playlist_db_id = pl["id"]
 
-            if playlist_spotify_id not in self._known_tracks:
-                self._known_tracks[playlist_spotify_id] = set()
-
-            known = self._known_tracks[playlist_spotify_id]
+            # Load all known track IDs for this playlist in one query
+            known_ids = await self._get_known_track_ids(playlist_db_id)
 
             # Fetch current tracks from Spotify
             try:
@@ -110,11 +125,8 @@ class DuplicateWatcher:
                     continue
                 track = item.track
 
-                if track.id in known:
+                if track.id in known_ids:
                     continue  # Already known
-
-                # New track found!
-                known.add(track.id)
 
                 # Save to DB
                 isrc = None
@@ -140,23 +152,6 @@ class DuplicateWatcher:
                         )
                     except Exception as e:
                         log.warning(f"Failed to save new track: {e}")
-
-                    # Pre-generate and cache AI facts
-                    existing_facts = await conn.fetchval(
-                        "SELECT ai_facts FROM playlist_tracks WHERE spotify_track_id = $1 AND ai_facts IS NOT NULL LIMIT 1",
-                        track.id,
-                    )
-                    if not existing_facts:
-                        try:
-                            facts = await generate_track_facts(track.name, track_artist, track_album)
-                            if facts:
-                                await conn.execute(
-                                    "UPDATE playlist_tracks SET ai_facts = $1 WHERE spotify_track_id = $2 AND ai_facts IS NULL",
-                                    facts, track.id,
-                                )
-                                log.info(f"Cached AI facts for '{track.name}'")
-                        except Exception as e:
-                            log.warning(f"Failed to cache facts for '{track.name}': {e}")
 
                 # Check for duplicates in OTHER playlists
                 if not isrc:
@@ -200,8 +195,6 @@ class DuplicateWatcher:
                             "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
                             playlist_db_id, track.id,
                         )
-                    known.discard(track.id)
-
                     await self._notify(
                         telegram_id=telegram_id,
                         track_title=track.name,
@@ -211,4 +204,4 @@ class DuplicateWatcher:
                         track_id=track.id,
                     )
 
-            log.debug(f"Checked playlist {pl['name']}: {len(known)} tracks tracked")
+            log.debug(f"Checked playlist {pl['name']}")
