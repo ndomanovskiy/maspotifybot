@@ -14,6 +14,7 @@ from app.services.voting import record_vote, remove_track_from_playlist, skip_to
 from app.services.playlists import import_playlist, import_all_turdom, check_duplicate, get_track_isrc, get_next_playlist, create_next_playlist, reschedule_playlist
 from app.services.duplicate_watcher import DuplicateWatcher
 from app.services.ai import generate_track_facts, generate_session_recap, generate_pre_recap_teaser
+from app.services.genre_distributor import distribute_session_tracks
 
 log = logging.getLogger(__name__)
 
@@ -496,6 +497,19 @@ async def _end_session():
             await bot.send_message(tid, recap, parse_mode="HTML")
         except Exception:
             pass
+
+    # Distribute kept tracks to genre playlists
+    try:
+        dist_result = await distribute_session_tracks(_pool, session_id_to_end)
+        if dist_result["distributed"] > 0:
+            dist_msg = f"🎶 Раскидал {dist_result['distributed']} треков по жанровым плейлистам!"
+            for tid in _participants:
+                try:
+                    await bot.send_message(tid, dist_msg, parse_mode="HTML")
+                except Exception:
+                    pass
+    except Exception as e:
+        log.error(f"Genre distribution failed: {e}")
 
     # Mark current playlist as listened
     if _active_playlist_id:
