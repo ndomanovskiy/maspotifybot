@@ -26,12 +26,27 @@ GENRE_MAP = {
 
 
 def classify_track(genre_str: str) -> str | None:
-    """Classify a track's genre string into a genre playlist name."""
+    """Classify a track's genre string into a genre playlist name.
+
+    Matches by whole words: keyword must appear as complete word(s) in the genre.
+    Longer keyword matches take priority to avoid ambiguity
+    (e.g. 'hardcore hip hop' → Hip-Hop via 'hip hop' (2 words) over 'hardcore' (1 word)).
+    """
     genres = [g.strip().lower() for g in genre_str.split(", ")]
-    for playlist_name, keywords in GENRE_MAP.items():
-        if any(any(kw in genre for kw in keywords) for genre in genres):
-            return playlist_name
-    return None
+
+    best_playlist = None
+    best_kw_words = 0
+
+    for genre in genres:
+        genre_words = set(genre.split())
+        for playlist_name, keywords in GENRE_MAP.items():
+            for kw in keywords:
+                kw_words = kw.split()
+                if set(kw_words).issubset(genre_words) and len(kw_words) > best_kw_words:
+                    best_kw_words = len(kw_words)
+                    best_playlist = playlist_name
+
+    return best_playlist
 
 
 async def load_genre_playlist_ids(pool: asyncpg.Pool):
