@@ -1,0 +1,20 @@
+[project]
+name = "maspotifybot"
+version = "0.1.0"
+description = "Telegram bot for TURDOM music sessions — voting, stats, playlist management"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.17.0",
+    "tekore>=5.4.0",
+    "asyncpg>=0.30.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+]
