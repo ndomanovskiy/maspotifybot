@@ -37,7 +37,8 @@ async def cmd_start(message: Message):
     await message.answer(
         "🎵 <b>MaSpotifyBot</b> — бот для сессий TURDOM!\n\n"
         "Команды:\n"
-        "/auth — подключить Spotify\n"
+        "/reg — привязать Spotify аккаунт\n"
+        "/auth — подключить Spotify (админ)\n"
         "/session — начать сессию\n"
         "/end — завершить сессию\n"
         "/join — присоединиться к голосованию",
@@ -60,6 +61,38 @@ async def cmd_auth(message: Message):
         await message.answer("✅ Spotify подключен!")
 
     asyncio.create_task(run_oauth_callback_server(on_code))
+
+
+@dp.message(Command("reg"))
+async def cmd_reg(message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "Скинь ссылку на свой Spotify профиль:\n\n"
+            "<code>/reg https://open.spotify.com/user/YOUR_ID</code>\n\n"
+            "Найти можно: Spotify → твой профиль → Share → Copy link",
+            parse_mode="HTML",
+        )
+        return
+
+    spotify_input = args[1].strip()
+    spotify_id = _extract_spotify_user_id(spotify_input)
+    if not spotify_id:
+        await message.answer("Не могу распарсить Spotify ID. Скинь ссылку формата open.spotify.com/user/...")
+        return
+
+    tid = message.from_user.id
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO users (telegram_id, telegram_name, spotify_id, is_admin)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (telegram_id) DO UPDATE SET spotify_id = $3, telegram_name = $2
+            """,
+            tid, message.from_user.full_name, spotify_id, is_admin(tid),
+        )
+
+    await message.answer(f"✅ Spotify привязан: <code>{spotify_id}</code>", parse_mode="HTML")
 
 
 @dp.message(Command("join"))
@@ -302,7 +335,22 @@ async def _on_track_change(info: TrackInfo):
     session_track_id = await create_session_track(_pool, _active_session_id, info)
     _current_session_track_id = session_track_id
 
-    added_by_text = f"\n👤 Added by: <code>{info.added_by}</code>" if info.added_by else ""
+    # Resolve added_by Spotify ID to Telegram name
+    added_by_name = None
+    if info.added_by:
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT telegram_name FROM users WHERE spotify_id = $1", info.added_by
+            )
+            if row:
+                added_by_name = row["telegram_name"]
+
+    if added_by_name:
+        added_by_text = f"\n👤 {added_by_name}"
+    elif info.added_by:
+        added_by_text = f"\n👤 <code>{info.added_by}</code>"
+    else:
+        added_by_text = ""
     text = f"🎵 <b>{info.title}</b>\n🎤 {info.artist}\n💿 {info.album}{added_by_text}"
 
     vote_row = [
@@ -493,6 +541,18 @@ async def on_join_session(callback: CallbackQuery):
         f"{callback.message.text}\n\n⏳ Запрос отправлен, жди подтверждения...",
         parse_mode="HTML",
     )
+
+
+def _extract_spotify_user_id(url_or_id: str) -> str | None:
+    """Extract Spotify user ID from URL or raw ID."""
+    # https://open.spotify.com/user/31xjkjxx...?si=...
+    match = re.search(r"user[/:]([a-zA-Z0-9._-]+)", url_or_id)
+    if match:
+        return match.group(1)
+    # Raw ID (no slashes, no spaces)
+    if re.match(r"^[a-zA-Z0-9._-]+$", url_or_id) and "/" not in url_or_id:
+        return url_or_id
+    return None
 
 
 def _extract_playlist_id(url_or_id: str) -> str | None:
