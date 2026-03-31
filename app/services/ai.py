@@ -51,6 +51,47 @@ async def generate_track_facts(title: str, artist: str, album: str) -> str:
         return ""
 
 
+async def generate_pre_recap_teaser(
+    total_tracks: int,
+    participants: list[str],
+    top_contributor: str | None = None,
+) -> str:
+    """Generate a teaser at session start — builds intrigue for the recap."""
+    if not settings.openai_api_key:
+        return f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем в конце!"
+
+    client = _get_client()
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты — ведущий музыкальных сессий TURDOM. Напиши короткий тизер (2-3 предложения) "
+                        "который будет показан В КОНЦЕ сессии перед итогами. "
+                        "Задача: создать интригу. Обыграй количество треков, участников, кто больше всех накидал. "
+                        "Заверши чем-то типа 'Чем всё закончилось? 🥁' или 'А теперь — итоги!' "
+                        "Стиль: неформальный, с эмоджи, как шоу-ведущий."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Треков в плейлисте: {total_tracks}\n"
+                        f"Участники: {', '.join(participants)}\n"
+                        f"Больше всех треков добавил: {top_contributor or 'неизвестно'}"
+                    ),
+                },
+            ],
+            max_tokens=120,
+            temperature=1.0,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем прямо сейчас! 🥁"
+
+
 async def generate_session_recap(
     total_tracks: int,
     kept: int,

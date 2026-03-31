@@ -13,7 +13,7 @@ from app.spotify.monitor import SpotifyMonitor, TrackInfo
 from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next, create_session_track
 from app.services.playlists import import_playlist, import_all_turdom, check_duplicate, get_track_isrc, get_next_playlist, create_next_playlist, reschedule_playlist
 from app.services.duplicate_watcher import DuplicateWatcher
-from app.services.ai import generate_track_facts, generate_session_recap
+from app.services.ai import generate_track_facts, generate_session_recap, generate_pre_recap_teaser
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ _current_session_track_id: int | None = None
 _participants: list[int] = []  # telegram_ids
 _track_messages: dict[int, list[tuple[int, int]]] = {}  # session_track_id -> [(chat_id, message_id)]
 _played_track_ids: set[str] = set()  # spotify track IDs already played this session
+_cached_pre_recap: str | None = None
 
 
 def is_admin(telegram_id: int) -> bool:
@@ -353,6 +354,44 @@ async def on_start_listening(callback: CallbackQuery):
     monitor.on_track_change(lambda info: _on_track_change(info))
     monitor.on_end(lambda: _on_session_end())
 
+    # Pre-generate recap teaser in background
+    async def _cache_teaser():
+        global _cached_pre_recap
+        try:
+            sp_inner = await get_spotify()
+            pl_items = await sp_inner.playlist_items(_active_playlist_id, limit=100)
+            total = pl_items.total
+
+            # Count tracks per contributor
+            contributors = {}
+            for item in pl_items.items:
+                if item.added_by:
+                    uid = item.added_by.id
+                    contributors[uid] = contributors.get(uid, 0) + 1
+
+            top_spotify_id = max(contributors, key=contributors.get) if contributors else None
+            top_name = None
+            if top_spotify_id:
+                async with _pool.acquire() as conn:
+                    row = await conn.fetchrow("SELECT telegram_name FROM users WHERE spotify_id = $1", top_spotify_id)
+                    if row:
+                        top_name = row["telegram_name"]
+
+            participant_names = []
+            async with _pool.acquire() as conn:
+                for tid in _participants:
+                    row = await conn.fetchrow("SELECT telegram_name FROM users WHERE telegram_id = $1", tid)
+                    if row:
+                        participant_names.append(row["telegram_name"])
+
+            _cached_pre_recap = await generate_pre_recap_teaser(total, participant_names, top_name)
+            log.info(f"Pre-recap teaser cached: {_cached_pre_recap[:50]}...")
+        except Exception as e:
+            log.warning(f"Failed to generate pre-recap teaser: {e}")
+            _cached_pre_recap = "🎧 Ну что, чем всё закончилось? Сейчас узнаем! 🥁"
+
+    asyncio.create_task(_cache_teaser())
+
     await callback.answer("▶️ Поехали!")
     await callback.message.edit_text(
         f"▶️ <b>Прослушивание запущено!</b> Участников: {len(_participants)}",
@@ -412,9 +451,11 @@ async def _end_session():
             session_id_to_end,
         )
 
-    # Show loading animation
+    # Pre-recap teaser (cached from session start)
+    teaser = _cached_pre_recap or "🎧 Ну что, чем всё закончилось? Сейчас узнаем! 🥁"
     for tid in _participants:
         try:
+            await bot.send_message(tid, teaser, parse_mode="HTML")
             await bot.send_chat_action(tid, "typing")
         except Exception:
             pass
@@ -484,6 +525,7 @@ async def _end_session():
     _current_session_track_id = None
     _played_track_ids = set()
     _track_messages.clear()
+    _cached_pre_recap = None
 
 
 async def _on_session_end():
