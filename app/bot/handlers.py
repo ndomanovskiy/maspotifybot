@@ -12,6 +12,7 @@ from app.spotify.auth import start_oauth, exchange_code, run_oauth_callback_serv
 from app.spotify.monitor import SpotifyMonitor, TrackInfo
 from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next, create_session_track
 from app.services.playlists import import_playlist, import_all_turdom, check_duplicate, get_track_isrc, get_next_playlist, create_next_playlist, reschedule_playlist
+from app.services.duplicate_watcher import DuplicateWatcher
 
 log = logging.getLogger(__name__)
 
@@ -800,6 +801,30 @@ async def setup_bot(pool: asyncpg.Pool):
         """)
 
     await load_token_from_db(pool)
+
+    # Start duplicate watcher in background
+    async def on_duplicate_found(telegram_id, track_title, artist, duplicates, playlist_name):
+        lines = []
+        for d in duplicates:
+            match_type = "🎯 точное" if d["match"] == "exact" else "🔗 ISRC"
+            lines.append(f"  {match_type} — {d['playlist']}")
+        dup_text = "\n".join(lines)
+        msg = f"⚠️ <b>Дубликат!</b>\n\n🎵 {track_title} — {artist}\nДобавлен в: {playlist_name}\n\nУже был:\n{dup_text}"
+
+        if telegram_id:
+            try:
+                await bot.send_message(telegram_id, msg, parse_mode="HTML")
+            except Exception:
+                pass
+        # Always notify admin too
+        if telegram_id != settings.telegram_admin_id:
+            try:
+                await bot.send_message(settings.telegram_admin_id, msg, parse_mode="HTML")
+            except Exception:
+                pass
+
+    watcher = DuplicateWatcher(pool, on_duplicate_found)
+    asyncio.create_task(watcher.start())
 
     log.info("Starting Telegram bot polling...")
     await dp.start_polling(bot)
