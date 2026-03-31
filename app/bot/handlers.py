@@ -13,6 +13,7 @@ from app.spotify.monitor import SpotifyMonitor, TrackInfo
 from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next, create_session_track
 from app.services.playlists import import_playlist, import_all_turdom, check_duplicate, get_track_isrc, get_next_playlist, create_next_playlist, reschedule_playlist
 from app.services.duplicate_watcher import DuplicateWatcher
+from app.services.ai import generate_track_facts, generate_session_recap
 
 log = logging.getLogger(__name__)
 
@@ -383,16 +384,17 @@ async def _end_session():
     if _active_session_id is None:
         return
 
+    session_id_to_end = _active_session_id
     await monitor.stop()
 
     async with _pool.acquire() as conn:
         await conn.execute(
             "UPDATE session_tracks SET vote_result = 'keep' WHERE session_id = $1 AND vote_result = 'pending'",
-            _active_session_id,
+            session_id_to_end,
         )
         await conn.execute(
             "UPDATE sessions SET status = 'ended', ended_at = NOW() WHERE id = $1",
-            _active_session_id,
+            session_id_to_end,
         )
 
         stats = await conn.fetchrow(
@@ -403,7 +405,7 @@ async def _end_session():
                 COUNT(*) FILTER (WHERE vote_result = 'drop') as dropped
             FROM session_tracks WHERE session_id = $1
             """,
-            _active_session_id,
+            session_id_to_end,
         )
 
     recap = (
@@ -412,6 +414,30 @@ async def _end_session():
         f"✅ Оставлено: {stats['kept']}\n"
         f"❌ Удалено: {stats['dropped']}"
     )
+
+    # AI recap
+    async with _pool.acquire() as conn:
+        tracks_data = [dict(r) for r in await conn.fetch(
+            """
+            SELECT st.title, st.artist, st.vote_result, st.added_by_spotify_id,
+                   COALESCE(u.telegram_name, st.added_by_spotify_id, '?') as added_by
+            FROM session_tracks st
+            LEFT JOIN users u ON st.added_by_spotify_id = u.spotify_id
+            WHERE st.session_id = $1
+            """,
+            session_id_to_end,
+        )]
+        participant_names = [r["telegram_name"] for r in await conn.fetch(
+            "SELECT telegram_name FROM users WHERE telegram_id = ANY($1::bigint[])",
+            _participants,
+        )]
+
+    ai_recap = await generate_session_recap(
+        stats['total'], stats['kept'], stats['dropped'],
+        tracks_data, participant_names,
+    )
+    if ai_recap:
+        recap += f"\n\n🤖 <b>AI Recap:</b>\n{ai_recap}"
 
     for tid in _participants:
         try:
@@ -487,7 +513,12 @@ async def _on_track_change(info: TrackInfo):
         added_by_text = f"\n👤 <code>{info.added_by}</code>"
     else:
         added_by_text = ""
-    text = f"🎵 <b>{info.title}</b>\n🎤 {info.artist}\n💿 {info.album}{added_by_text}"
+
+    # Generate AI facts (async, don't block)
+    facts = await generate_track_facts(info.title, info.artist, info.album)
+    facts_text = f"\n\n💡 {facts}" if facts else ""
+
+    text = f"🎵 <b>{info.title}</b>\n🎤 {info.artist}\n💿 {info.album}{added_by_text}{facts_text}"
 
     vote_row = [
         InlineKeyboardButton(text="✅ Keep", callback_data=f"vote:keep:{session_track_id}"),
@@ -570,6 +601,15 @@ async def on_vote(callback: CallbackQuery):
     # Update buttons with counts
     await _update_vote_buttons(session_track_id)
 
+    # Offer rating after vote
+    rate_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="⭐ Оценить трек", callback_data=f"rate_start:{session_track_id}")
+    ]])
+    try:
+        await callback.message.reply("Хочешь оценить?", reply_markup=rate_kb)
+    except Exception:
+        pass
+
     # Drop — remove + skip immediately
     if result["status"] == "dropped":
         for tid in _participants:
@@ -610,6 +650,80 @@ async def on_skip(callback: CallbackQuery):
 
     await callback.answer("⏭ Скипаю...")
     await skip_to_next()
+
+
+RATING_CRITERIA = [
+    ("rhymes", "Рифмы/Образы"),
+    ("structure", "Структура/Ритмика"),
+    ("style", "Реализация стиля"),
+    ("charisma", "Индивидуальность"),
+    ("vibe", "Атмосфера/Вайб"),
+]
+
+
+@dp.callback_query(F.data.startswith("rate_start:"))
+async def on_rate_start(callback: CallbackQuery):
+    session_track_id = int(callback.data.split(":")[1])
+    # Show first criterion
+    await callback.answer()
+    await _send_rating_step(callback.from_user.id, session_track_id, 0, {})
+
+
+async def _send_rating_step(chat_id: int, session_track_id: int, step: int, scores: dict):
+    """Send rating buttons for one criterion."""
+    if step >= len(RATING_CRITERIA):
+        # All rated — save to DB
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO ratings (session_track_id, telegram_id, rhymes, structure, style, charisma, vibe)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (session_track_id, telegram_id) DO UPDATE
+                SET rhymes=$3, structure=$4, style=$5, charisma=$6, vibe=$7, rated_at=NOW()
+                """,
+                session_track_id, chat_id,
+                scores.get("rhymes", 3), scores.get("structure", 3),
+                scores.get("style", 3), scores.get("charisma", 3), scores.get("vibe", 3),
+            )
+        stars = " ".join(f"{v}⭐" for v in scores.values())
+        await bot.send_message(chat_id, f"✅ Оценка сохранена: {stars}")
+        return
+
+    key, label = RATING_CRITERIA[step]
+    # Encode scores in callback data: rate:track_id:step:score1,score2,...
+    scores_str = ",".join(str(scores.get(RATING_CRITERIA[i][0], 0)) for i in range(step))
+    buttons = []
+    for star in range(1, 6):
+        buttons.append(InlineKeyboardButton(
+            text=f"{'⭐' * star}",
+            callback_data=f"rate:{session_track_id}:{step}:{scores_str}{',' if scores_str else ''}{star}",
+        ))
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[buttons])
+    await bot.send_message(chat_id, f"🎯 <b>{label}</b> (1-5):", reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("rate:"))
+async def on_rate(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    # rate:track_id:step:scores_csv
+    session_track_id = int(parts[1])
+    step = int(parts[2])
+    scores_csv = parts[3] if len(parts) > 3 else ""
+    score_values = [int(x) for x in scores_csv.split(",") if x]
+
+    # Rebuild scores dict
+    scores = {}
+    for i, val in enumerate(score_values):
+        scores[RATING_CRITERIA[i][0]] = val
+
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    await _send_rating_step(callback.from_user.id, session_track_id, step + 1, scores)
 
 
 @dp.callback_query(F.data.startswith("approve:"))

@@ -57,6 +57,19 @@ CREATE TABLE IF NOT EXISTS playlist_tracks (
     UNIQUE (playlist_id, spotify_track_id)
 );
 
+CREATE TABLE IF NOT EXISTS ratings (
+    id SERIAL PRIMARY KEY,
+    session_track_id INTEGER REFERENCES session_tracks(id) ON DELETE CASCADE,
+    telegram_id BIGINT NOT NULL,
+    rhymes INTEGER CHECK (rhymes BETWEEN 1 AND 5),
+    structure INTEGER CHECK (structure BETWEEN 1 AND 5),
+    style INTEGER CHECK (style BETWEEN 1 AND 5),
+    charisma INTEGER CHECK (charisma BETWEEN 1 AND 5),
+    vibe INTEGER CHECK (vibe BETWEEN 1 AND 5),
+    rated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (session_track_id, telegram_id)
+);
+
 CREATE TABLE IF NOT EXISTS votes (
     id SERIAL PRIMARY KEY,
     session_track_id INTEGER REFERENCES session_tracks(id) ON DELETE CASCADE,
