@@ -33,6 +33,30 @@ CREATE TABLE IF NOT EXISTS session_tracks (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS playlists (
+    id SERIAL PRIMARY KEY,
+    spotify_id TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    number INTEGER,
+    url TEXT,
+    status TEXT DEFAULT 'listened' CHECK (status IN ('listened', 'active', 'upcoming')),
+    is_thematic BOOLEAN DEFAULT FALSE,
+    track_count INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS playlist_tracks (
+    id SERIAL PRIMARY KEY,
+    playlist_id INTEGER REFERENCES playlists(id) ON DELETE CASCADE,
+    spotify_track_id TEXT NOT NULL,
+    isrc TEXT,
+    title TEXT NOT NULL,
+    artist TEXT NOT NULL,
+    added_by_spotify_id TEXT,
+    added_at TIMESTAMPTZ,
+    UNIQUE (playlist_id, spotify_track_id)
+);
+
 CREATE TABLE IF NOT EXISTS votes (
     id SERIAL PRIMARY KEY,
     session_track_id INTEGER REFERENCES session_tracks(id) ON DELETE CASCADE,

@@ -11,6 +11,7 @@ from app.config import settings
 from app.spotify.auth import start_oauth, exchange_code, run_oauth_callback_server, load_token_from_db, save_token_to_db, get_spotify
 from app.spotify.monitor import SpotifyMonitor, TrackInfo
 from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next, create_session_track
+from app.services.playlists import import_playlist, import_all_turdom, check_duplicate, get_track_isrc, get_next_playlist, create_next_playlist, reschedule_playlist
 
 log = logging.getLogger(__name__)
 
@@ -38,10 +39,13 @@ async def cmd_start(message: Message):
         "🎵 <b>MaSpotifyBot</b> — бот для сессий TURDOM!\n\n"
         "Команды:\n"
         "/reg — привязать Spotify аккаунт\n"
+        "/next — ссылка на следующий плейлист\n"
+        "/check — проверить трек на дубликат\n"
         "/auth — подключить Spotify (админ)\n"
         "/session — начать сессию\n"
         "/end — завершить сессию\n"
-        "/join — присоединиться к голосованию",
+        "/join — присоединиться к голосованию\n"
+        "/import_all — импорт всех TURDOM плейлистов (админ)",
         parse_mode="HTML",
     )
 
@@ -93,6 +97,98 @@ async def cmd_reg(message: Message):
         )
 
     await message.answer(f"✅ Spotify привязан: <code>{spotify_id}</code>", parse_mode="HTML")
+
+
+@dp.message(Command("next"))
+async def cmd_next(message: Message):
+    result = await get_next_playlist(_pool)
+    if result:
+        await message.answer(
+            f"🎧 <b>{result['name']}</b> ({result['status']})\n\n{result['url']}",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer("Нет предстоящих плейлистов в базе.")
+
+
+@dp.message(Command("check"))
+async def cmd_check(message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "Скинь ссылку на трек:\n<code>/check https://open.spotify.com/track/...</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    track_input = args[1].strip()
+    match = re.search(r"track[/:]([a-zA-Z0-9]+)", track_input)
+    track_id = match.group(1) if match else track_input
+
+    await message.answer("🔍 Проверяю...")
+
+    isrc = await get_track_isrc(track_id)
+    duplicates = await check_duplicate(_pool, track_id, isrc)
+
+    if duplicates:
+        lines = []
+        for d in duplicates:
+            match_type = "🎯 точное совпадение" if d["match"] == "exact" else "🔗 тот же трек (другой альбом)"
+            lines.append(f"• <b>{d['title']}</b> — {d['artist']}\n  {match_type} в {d['playlist']}\n  {d['url']}")
+        await message.answer(
+            f"⚠️ <b>Дубликат найден!</b>\n\n" + "\n\n".join(lines),
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer("✅ Трек не найден в базе — можно добавлять!")
+
+
+@dp.message(Command("import_all"))
+async def cmd_import_all(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ может импортировать.")
+        return
+
+    await message.answer("⏳ Сканирую Spotify и импортирую все TURDOM плейлисты... Это займёт пару минут.")
+
+    try:
+        results = await import_all_turdom(_pool)
+        total_tracks = sum(r["tracks"] for r in results)
+        text = f"✅ <b>Импорт завершён!</b>\n\nПлейлистов: {len(results)}\nТреков: {total_tracks}\n\n"
+        for r in results[:20]:  # first 20
+            text += f"• {r['name']} — {r['tracks']} треков\n"
+        if len(results) > 20:
+            text += f"\n...и ещё {len(results) - 20}"
+        await message.answer(text, parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка импорта: {e}")
+
+
+@dp.message(Command("import"))
+async def cmd_import(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ может импортировать.")
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Укажи ссылку: /import &lt;playlist_url&gt;")
+        return
+
+    playlist_id = _extract_playlist_id(args[1].strip())
+    if not playlist_id:
+        await message.answer("Не могу распарсить ID плейлиста.")
+        return
+
+    await message.answer("⏳ Импортирую...")
+    try:
+        result = await import_playlist(_pool, playlist_id)
+        await message.answer(
+            f"✅ <b>{result['name']}</b> — {result['tracks']} треков импортировано!",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("join"))
@@ -305,6 +401,29 @@ async def _end_session():
             await bot.send_message(tid, recap, parse_mode="HTML")
         except Exception:
             pass
+
+    # Mark current playlist as listened
+    if _active_playlist_id:
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE playlists SET status = 'listened' WHERE spotify_id = $1",
+                _active_playlist_id,
+            )
+
+    # Offer to create next playlist (admin only)
+    create_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📋 Обычный", callback_data="create_playlist:normal"),
+            InlineKeyboardButton(text="🎭 Тематический", callback_data="create_playlist:thematic"),
+        ],
+        [InlineKeyboardButton(text="⏭ Пропустить", callback_data="create_playlist:skip")],
+    ])
+    await bot.send_message(
+        settings.telegram_admin_id,
+        "🆕 Создать следующий плейлист?",
+        reply_markup=create_kb,
+        parse_mode="HTML",
+    )
 
     _active_session_id = None
     _active_playlist_id = None
@@ -541,6 +660,108 @@ async def on_join_session(callback: CallbackQuery):
         f"{callback.message.text}\n\n⏳ Запрос отправлен, жди подтверждения...",
         parse_mode="HTML",
     )
+
+
+@dp.callback_query(F.data.startswith("create_playlist:"))
+async def on_create_playlist(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Только ведущий!")
+        return
+
+    action = callback.data.split(":")[1]
+
+    if action == "skip":
+        await callback.answer("Ок")
+        await callback.message.edit_text("⏭ Создание плейлиста пропущено.", parse_mode="HTML")
+        return
+
+    if action == "thematic":
+        await callback.answer("Напиши тему")
+        await callback.message.edit_text(
+            "🎭 Напиши тему для плейлиста (одним сообщением):",
+            parse_mode="HTML",
+        )
+        # Set flag to catch next message as theme
+        global _waiting_theme
+        _waiting_theme = True
+        return
+
+    # Normal playlist
+    await callback.answer("Создаю...")
+    try:
+        result = await create_next_playlist(_pool)
+        text = f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}"
+        await callback.message.edit_text(text, parse_mode="HTML")
+
+        # Notify all participants
+        for tid in _participants:
+            if tid != callback.from_user.id:
+                try:
+                    await bot.send_message(
+                        tid,
+                        f"🆕 <b>Новый плейлист:</b> {result['name']}\n\nДобавляйте треки!\n{result['url']}",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка: {e}")
+
+
+_waiting_theme = False
+
+
+@dp.message(lambda m: _waiting_theme and is_admin(m.from_user.id))
+async def on_theme_input(message: Message):
+    global _waiting_theme
+    if not _waiting_theme:
+        return
+    _waiting_theme = False
+
+    theme = message.text.strip()
+    try:
+        result = await create_next_playlist(_pool, theme=theme)
+        text = f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}"
+        await message.answer(text, parse_mode="HTML")
+
+        for tid in _participants:
+            if tid != message.from_user.id:
+                try:
+                    await bot.send_message(
+                        tid,
+                        f"🆕 <b>Новый плейлист:</b> {result['name']}\n\nДобавляйте треки!\n{result['url']}",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+@dp.message(Command("reschedule"))
+async def cmd_reschedule(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ.")
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Укажи новую дату: /reschedule 09/04/2026")
+        return
+
+    new_date = args[1].strip()
+    if not re.match(r"\d{2}/\d{2}/\d{4}", new_date):
+        await message.answer("Формат даты: ДД/ММ/ГГГГ")
+        return
+
+    result = await reschedule_playlist(_pool, new_date)
+    if result:
+        await message.answer(
+            f"📅 Перенесено:\n<s>{result['old_name']}</s>\n→ <b>{result['new_name']}</b>",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer("Нет предстоящих плейлистов для переноса.")
 
 
 def _extract_spotify_user_id(url_or_id: str) -> str | None:
