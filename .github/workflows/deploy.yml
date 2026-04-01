@@ -16,7 +16,7 @@ jobs:
         run: pip install .[dev]
       - name: Run tests
         env:
-          TELEGRAM_BOT_TOKEN: "test"
+          TELEGRAM_BOT_TOKEN: "0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAaaa"
           TELEGRAM_ADMIN_ID: "0"
           SPOTIFY_CLIENT_ID: "test"
           SPOTIFY_CLIENT_SECRET: "test"
