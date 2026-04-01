@@ -55,6 +55,8 @@ async def cmd_start(message: Message):
         "Команды:\n"
         "/reg — привязать Spotify аккаунт\n"
         "/next — ссылка на следующий плейлист\n"
+        "/stats — общая статистика TURDOM\n"
+        "/mystats — твоя персональная статистика\n"
         "/check — проверить трек на дубликат\n"
         "/auth — подключить Spotify (админ)\n"
         "/session — начать сессию\n"
@@ -193,6 +195,177 @@ async def cmd_check(message: Message):
         )
     else:
         await message.answer("✅ Трек не найден в базе — можно добавлять!")
+
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message):
+    if not await is_registered(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников TURDOM.")
+        return
+
+    async with _pool.acquire() as conn:
+        # Total tracks and playlists
+        total_tracks = await conn.fetchval("SELECT COUNT(*) FROM playlist_tracks")
+        total_playlists = await conn.fetchval("SELECT COUNT(*) FROM playlists WHERE number IS NOT NULL")
+        total_users = await conn.fetchval("SELECT COUNT(*) FROM users WHERE spotify_id IS NOT NULL")
+
+        # Per-user stats
+        user_rows = await conn.fetch("""
+            SELECT COALESCE(u.telegram_username, u.telegram_name) as name,
+                   COUNT(pt.id) as tracks
+            FROM users u
+            LEFT JOIN playlist_tracks pt ON u.spotify_id = pt.added_by_spotify_id
+            WHERE u.spotify_id IS NOT NULL
+            GROUP BY name ORDER BY tracks DESC
+        """)
+
+        # Genre breakdown
+        genre_rows = await conn.fetch("""
+            SELECT genre, COUNT(*) as cnt
+            FROM playlist_tracks
+            WHERE genre IS NOT NULL AND genre <> ''
+            GROUP BY genre ORDER BY cnt DESC LIMIT 30
+        """)
+
+    # Classify genres into TURDOM playlists
+    from app.services.genre_distributor import classify_track, GENRE_MAP
+    genre_totals: dict[str, int] = {}
+    for r in genre_rows:
+        playlist = classify_track(r["genre"])
+        if playlist:
+            short = playlist.replace("TURDOM ", "")
+            genre_totals[short] = genre_totals.get(short, 0) + r["cnt"]
+
+    genre_emojis = {
+        "Electronic": "⚡", "Pop": "🎹", "Metal": "🤘", "Rock": "🎸",
+        "Hip-Hop": "🎤", "Indie": "🎶", "DnB": "🥁", "R&B": "💜",
+        "Chill": "🌊", "Soundtrack": "🎬", "Phonk": "👻",
+    }
+
+    # Build messages
+    msg1 = (
+        f"🎵 <b>TURDOM STATS</b>\n"
+        f"<i>{total_tracks} треков · {total_playlists} сессий · {total_users} участников</i>\n\n"
+        f"<b>📊 Жанровые плейлисты:</b>\n\n"
+    )
+    for name in ["Electronic", "Pop", "Metal", "Rock", "Hip-Hop", "Indie", "DnB", "R&B", "Chill", "Soundtrack", "Phonk"]:
+        count = genre_totals.get(name, 0)
+        emoji = genre_emojis.get(name, "")
+        msg1 += f"{emoji} {name} — {count}\n"
+
+    # Per-user genre breakdown
+    async with _pool.acquire() as conn:
+        all_user_genres = await conn.fetch("""
+            SELECT COALESCE(u.telegram_username, u.telegram_name) as name,
+                   pt.genre, COUNT(*) as cnt
+            FROM playlist_tracks pt
+            JOIN users u ON u.spotify_id = pt.added_by_spotify_id
+            WHERE pt.genre IS NOT NULL AND pt.genre <> ''
+            GROUP BY name, pt.genre ORDER BY name, cnt DESC
+        """)
+
+    # Group by user
+    user_genre_map: dict[str, dict[str, int]] = {}
+    for r in all_user_genres:
+        name = r["name"]
+        if name not in user_genre_map:
+            user_genre_map[name] = {}
+        pl = classify_track(r["genre"])
+        if pl:
+            short = pl.replace("TURDOM ", "")
+            user_genre_map[name][short] = user_genre_map[name].get(short, 0) + r["cnt"]
+
+    msg2 = "👤 <b>Кто что слушает</b>\n\n"
+    for r in user_rows:
+        name = r["name"]
+        tracks = r["tracks"]
+        user_genres = user_genre_map.get(name, {})
+        top3 = sorted(user_genres.items(), key=lambda x: -x[1])[:3]
+        top3_str = " · ".join(f"{g} {c}" for g, c in top3)
+        msg2 += f"@{name} — {tracks} треков\n<code>{top3_str}</code>\n\n"
+
+    await message.answer(msg1, parse_mode="HTML")
+    await message.answer(msg2, parse_mode="HTML")
+
+
+@dp.message(Command("mystats"))
+async def cmd_mystats(message: Message):
+    if not await is_registered(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников TURDOM.")
+        return
+
+    tid = message.from_user.id
+    async with _pool.acquire() as conn:
+        user = await conn.fetchrow(
+            "SELECT spotify_id, telegram_username, telegram_name FROM users WHERE telegram_id = $1", tid
+        )
+        if not user or not user["spotify_id"]:
+            await message.answer("У тебя не привязан Spotify. Используй /reg")
+            return
+
+        spotify_id = user["spotify_id"]
+        display = f"@{user['telegram_username']}" if user["telegram_username"] else user["telegram_name"]
+
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM playlist_tracks WHERE added_by_spotify_id = $1", spotify_id
+        )
+
+        # Sessions participated
+        sessions_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM session_participants WHERE telegram_id = $1", tid
+        )
+
+        # Voting stats
+        votes_kept = await conn.fetchval("""
+            SELECT COUNT(*) FROM session_tracks st
+            JOIN votes v ON v.session_track_id = st.id
+            WHERE st.added_by_spotify_id = $1 AND st.vote_result = 'keep'
+        """, spotify_id) or 0
+        votes_dropped = await conn.fetchval("""
+            SELECT COUNT(*) FROM session_tracks st
+            JOIN votes v ON v.session_track_id = st.id
+            WHERE st.added_by_spotify_id = $1 AND st.vote_result = 'drop'
+        """, spotify_id) or 0
+
+        # Genre breakdown
+        genre_rows = await conn.fetch("""
+            SELECT genre, COUNT(*) as cnt FROM playlist_tracks
+            WHERE added_by_spotify_id = $1 AND genre IS NOT NULL AND genre <> ''
+            GROUP BY genre ORDER BY cnt DESC LIMIT 30
+        """, spotify_id)
+
+    from app.services.genre_distributor import classify_track
+    genre_totals: dict[str, int] = {}
+    for r in genre_rows:
+        pl = classify_track(r["genre"])
+        if pl:
+            short = pl.replace("TURDOM ", "")
+            genre_totals[short] = genre_totals.get(short, 0) + r["cnt"]
+
+    top5 = sorted(genre_totals.items(), key=lambda x: -x[1])[:5]
+    top_genre = top5[0][0] if top5 else "—"
+
+    genre_emojis = {
+        "Electronic": "⚡", "Pop": "🎹", "Metal": "🤘", "Rock": "🎸",
+        "Hip-Hop": "🎤", "Indie": "🎶", "DnB": "🥁", "R&B": "💜",
+        "Chill": "🌊", "Soundtrack": "🎬", "Phonk": "👻",
+    }
+    top_emoji = genre_emojis.get(top_genre, "🎵")
+
+    msg = (
+        f"📊 <b>Статистика {display}</b>\n\n"
+        f"🎵 Треков добавлено: <b>{total}</b>\n"
+        f"📅 Сессий: <b>{sessions_count}</b>\n"
+        f"✅ Kept: <b>{votes_kept}</b> · ❌ Dropped: <b>{votes_dropped}</b>\n\n"
+        f"<b>Топ жанры:</b>\n"
+    )
+    for g_name, g_count in top5:
+        emoji = genre_emojis.get(g_name, "")
+        msg += f"{emoji} {g_name} — {g_count}\n"
+
+    msg += f"\n{top_emoji} <b>Профиль: {top_genre} Lover</b>"
+
+    await message.answer(msg, parse_mode="HTML")
 
 
 @dp.message(Command("scan"))
