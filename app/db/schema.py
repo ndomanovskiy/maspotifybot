@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     telegram_id BIGINT UNIQUE NOT NULL,
     telegram_name TEXT NOT NULL,
+    telegram_username TEXT,
     spotify_id TEXT,
     is_admin BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -93,6 +94,7 @@ CREATE TABLE IF NOT EXISTS votes (
 
 MIGRATIONS = [
     "ALTER TABLE playlists ADD COLUMN IF NOT EXISTS invite_url TEXT",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_username TEXT",
     """CREATE TABLE IF NOT EXISTS session_participants (
         id SERIAL PRIMARY KEY,
         session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,

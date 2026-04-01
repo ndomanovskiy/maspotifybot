@@ -108,11 +108,11 @@ async def cmd_reg(message: Message):
     async with _pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (telegram_id, telegram_name, spotify_id, is_admin)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (telegram_id) DO UPDATE SET spotify_id = $3, telegram_name = $2
+            INSERT INTO users (telegram_id, telegram_name, telegram_username, spotify_id, is_admin)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (telegram_id) DO UPDATE SET spotify_id = $4, telegram_name = $2, telegram_username = $3
             """,
-            tid, message.from_user.full_name, spotify_id, is_admin(tid),
+            tid, message.from_user.full_name, message.from_user.username or "", spotify_id, is_admin(tid),
         )
 
     await message.answer(f"✅ Spotify привязан: <code>{spotify_id}</code>", parse_mode="HTML")
@@ -328,11 +328,11 @@ async def cmd_session(message: Message):
         async with _pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO users (telegram_id, telegram_name, is_admin)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (telegram_id) DO UPDATE SET telegram_name = $2
+                INSERT INTO users (telegram_id, telegram_name, telegram_username, is_admin)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (telegram_id) DO UPDATE SET telegram_name = $2, telegram_username = $3
                 """,
-                tid, message.from_user.full_name, True,
+                tid, message.from_user.full_name, message.from_user.username or "", True,
             )
 
     async with _pool.acquire() as conn:
@@ -535,7 +535,7 @@ async def _end_session():
         tracks_data = [dict(r) for r in await conn.fetch(
             """
             SELECT st.title, st.artist, st.vote_result, st.added_by_spotify_id,
-                   COALESCE(u.telegram_name, st.added_by_spotify_id, '?') as added_by
+                   COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, st.added_by_spotify_id, '?') as added_by
             FROM session_tracks st
             LEFT JOIN users u ON st.added_by_spotify_id = u.spotify_id
             WHERE st.session_id = $1
@@ -631,10 +631,10 @@ async def _on_track_change(info: TrackInfo):
     if info.added_by:
         async with _pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT telegram_name FROM users WHERE spotify_id = $1", info.added_by
+                "SELECT telegram_username, telegram_name FROM users WHERE spotify_id = $1", info.added_by
             )
             if row:
-                added_by_name = row["telegram_name"]
+                added_by_name = f"@{row['telegram_username']}" if row["telegram_username"] else row["telegram_name"]
 
     # Build links
     track_url = f"https://open.spotify.com/track/{info.track_id}"
@@ -814,8 +814,8 @@ async def on_approve(callback: CallbackQuery):
         _participants.append(tid)
         async with _pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO users (telegram_id, telegram_name) VALUES ($1, $2) ON CONFLICT (telegram_id) DO NOTHING",
-                tid, "",
+                "INSERT INTO users (telegram_id, telegram_name, telegram_username) VALUES ($1, $2, $3) ON CONFLICT (telegram_id) DO NOTHING",
+                tid, "", "",
             )
             if _active_session_id:
                 await conn.execute(
