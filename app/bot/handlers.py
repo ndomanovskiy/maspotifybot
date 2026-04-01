@@ -49,6 +49,7 @@ async def cmd_start(message: Message):
         "/session — начать сессию\n"
         "/end — завершить сессию\n"
         "/join — присоединиться к голосованию\n"
+        "/setnextlink — установить invite-ссылку для плейлиста (админ)\n"
         "/import_all — импорт всех TURDOM плейлистов (админ)",
         parse_mode="HTML",
     )
@@ -107,12 +108,39 @@ async def cmd_reg(message: Message):
 async def cmd_next(message: Message):
     result = await get_next_playlist(_pool)
     if result:
+        link = result.get("invite_url") or result["url"]
         await message.answer(
-            f"🎧 <b>{result['name']}</b> ({result['status']})\n\n{result['url']}",
+            f"🎧 <b>{result['name']}</b> ({result['status']})\n\n{link}",
             parse_mode="HTML",
         )
     else:
         await message.answer("Нет предстоящих плейлистов в базе.")
+
+
+@dp.message(Command("setnextlink"))
+async def cmd_setnextlink(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or "spotify.com/playlist" not in args[1]:
+        await message.answer(
+            "Скинь invite-ссылку на плейлист:\n<code>/setnextlink https://open.spotify.com/playlist/...?pt=...</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    invite_url = args[1].strip()
+    async with _pool.acquire() as conn:
+        updated = await conn.fetchval(
+            "UPDATE playlists SET invite_url = $1 WHERE status = 'upcoming' RETURNING name",
+            invite_url,
+        )
+
+    if updated:
+        await message.answer(f"✅ Invite-ссылка сохранена для <b>{updated}</b>", parse_mode="HTML")
+    else:
+        await message.answer("❌ Нет upcoming плейлиста в базе.")
 
 
 @dp.message(Command("check"))
@@ -832,7 +860,11 @@ async def on_create_playlist(callback: CallbackQuery):
     await callback.answer("Создаю...")
     try:
         result = await create_next_playlist(_pool)
-        text = f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}"
+        text = (
+            f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
+            f"📎 Открой плейлист в Spotify → Invite Collaborators → скинь ссылку сюда:\n"
+            f"<code>/setnextlink ссылка</code>"
+        )
         await callback.message.edit_text(text, parse_mode="HTML")
 
         # Notify all participants
@@ -863,7 +895,11 @@ async def on_theme_input(message: Message):
     theme = message.text.strip()
     try:
         result = await create_next_playlist(_pool, theme=theme)
-        text = f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}"
+        text = (
+            f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
+            f"📎 Открой плейлист в Spotify → Invite Collaborators → скинь ссылку сюда:\n"
+            f"<code>/setnextlink ссылка</code>"
+        )
         await message.answer(text, parse_mode="HTML")
 
         for tid in _participants:

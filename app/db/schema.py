@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS playlists (
     status TEXT DEFAULT 'listened' CHECK (status IN ('listened', 'active', 'upcoming')),
     is_thematic BOOLEAN DEFAULT FALSE,
     track_count INTEGER DEFAULT 0,
+    invite_url TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -82,6 +83,16 @@ CREATE TABLE IF NOT EXISTS votes (
 """
 
 
+MIGRATIONS = [
+    "ALTER TABLE playlists ADD COLUMN IF NOT EXISTS invite_url TEXT",
+]
+
+
 async def apply_schema(pool: asyncpg.Pool):
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA_SQL)
+        for migration in MIGRATIONS:
+            try:
+                await conn.execute(migration)
+            except Exception:
+                pass

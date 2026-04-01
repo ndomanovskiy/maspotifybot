@@ -152,7 +152,7 @@ async def get_next_playlist(pool: asyncpg.Pool) -> dict | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT name, url, status FROM playlists
+            SELECT name, url, status, invite_url FROM playlists
             WHERE status IN ('active', 'upcoming')
             ORDER BY
                 CASE status WHEN 'active' THEN 0 WHEN 'upcoming' THEN 1 END,
@@ -161,7 +161,8 @@ async def get_next_playlist(pool: asyncpg.Pool) -> dict | None:
             """
         )
     if row:
-        return {"name": row["name"], "url": row["url"], "status": row["status"]}
+        return {"name": row["name"], "url": row["url"], "status": row["status"],
+                "invite_url": row["invite_url"]}
     return None
 
 
