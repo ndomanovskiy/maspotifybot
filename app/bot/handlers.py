@@ -505,11 +505,57 @@ async def cmd_scan(message: Message):
         await message.answer("Только админ.")
         return
 
-    await message.answer("🔍 Сканирую плейлисты на дубликаты...")
+    await message.answer("🔍 Сканирую upcoming плейлист на дубликаты...")
     try:
-        watcher = DuplicateWatcher(_pool, _on_duplicate_notify)
-        await watcher._check_playlists()
-        await message.answer("✅ Сканирование завершено!")
+        from app.services.playlists import check_duplicate, get_track_isrc
+        from app.spotify.auth import get_spotify
+
+        async with _pool.acquire() as conn:
+            playlists = await conn.fetch(
+                "SELECT id, spotify_id, name FROM playlists WHERE status IN ('active', 'upcoming')"
+            )
+
+        if not playlists:
+            await message.answer("Нет active/upcoming плейлистов.")
+            return
+
+        sp = await get_spotify()
+        found_count = 0
+
+        for pl in playlists:
+            items = await sp.playlist_items(pl["spotify_id"], limit=100)
+            for item in items.items:
+                if not item.track:
+                    continue
+                track = item.track
+                isrc = None
+                if hasattr(track, "external_ids") and track.external_ids:
+                    isrc = getattr(track.external_ids, "isrc", None)
+                if not isrc:
+                    isrc = await get_track_isrc(track.id)
+
+                duplicates = await check_duplicate(_pool, track.id, isrc)
+                duplicates = [d for d in duplicates if d["playlist"] != pl["name"]]
+
+                if duplicates:
+                    found_count += 1
+                    # Auto-remove
+                    await sp.playlist_remove(pl["spotify_id"], [f"spotify:track:{track.id}"])
+                    async with _pool.acquire() as conn:
+                        await conn.execute(
+                            "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
+                            pl["id"], track.id,
+                        )
+                    await _on_duplicate_notify(
+                        telegram_id=None,
+                        track_title=track.name,
+                        artist=", ".join(a.name for a in track.artists),
+                        duplicates=duplicates,
+                        playlist_name=pl["name"],
+                        track_id=track.id,
+                    )
+
+        await message.answer(f"✅ Сканирование завершено! Дубликатов найдено и удалено: {found_count}")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
