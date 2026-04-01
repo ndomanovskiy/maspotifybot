@@ -12,6 +12,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Notify tests started
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          FIRST_LINE=$(echo "$COMMIT_MSG" | head -n1)
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+            --data-urlencode "chat_id=${{ secrets.ADMIN_ID }}" \
+            --data-urlencode "text=🧪 CI: тесты запущены — $FIRST_LINE"
       - name: Install dependencies
         run: pip install .[dev]
       - name: Run tests
@@ -21,12 +29,17 @@ jobs:
           SPOTIFY_CLIENT_ID: "test"
           SPOTIFY_CLIENT_SECRET: "test"
         run: pytest tests/ -v
+      - name: Notify tests passed
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+            -d chat_id=${{ secrets.ADMIN_ID }} \
+            -d text="✅ CI: тесты прошли"
       - name: Notify tests failed
         if: failure()
         run: |
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
             --data-urlencode "chat_id=${{ secrets.ADMIN_ID }}" \
-            --data-urlencode "text=❌ Тесты упали — деплой отменён"
+            --data-urlencode "text=❌ CI: тесты упали — деплой отменён"
 
   deploy:
     needs: test
