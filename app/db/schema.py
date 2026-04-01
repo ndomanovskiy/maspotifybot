@@ -72,6 +72,14 @@ CREATE TABLE IF NOT EXISTS ratings (
     UNIQUE (session_track_id, telegram_id)
 );
 
+CREATE TABLE IF NOT EXISTS session_participants (
+    id SERIAL PRIMARY KEY,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+    telegram_id BIGINT NOT NULL,
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (session_id, telegram_id)
+);
+
 CREATE TABLE IF NOT EXISTS votes (
     id SERIAL PRIMARY KEY,
     session_track_id INTEGER REFERENCES session_tracks(id) ON DELETE CASCADE,
@@ -85,6 +93,13 @@ CREATE TABLE IF NOT EXISTS votes (
 
 MIGRATIONS = [
     "ALTER TABLE playlists ADD COLUMN IF NOT EXISTS invite_url TEXT",
+    """CREATE TABLE IF NOT EXISTS session_participants (
+        id SERIAL PRIMARY KEY,
+        session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+        telegram_id BIGINT NOT NULL,
+        joined_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (session_id, telegram_id)
+    )""",
 ]
 
 

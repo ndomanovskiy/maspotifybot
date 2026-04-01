@@ -268,6 +268,12 @@ async def cmd_join(message: Message):
     if is_admin(tid):
         if tid not in _participants:
             _participants.append(tid)
+        if _active_session_id:
+            async with _pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO session_participants (session_id, telegram_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    _active_session_id, tid,
+                )
         await message.answer("✅ Ты админ, ты всегда в деле!")
         return
 
@@ -336,6 +342,12 @@ async def cmd_session(message: Message):
         )
         _active_session_id = row["id"]
         _active_playlist_id = playlist_id
+
+        # Register admin as session participant
+        await conn.execute(
+            "INSERT INTO session_participants (session_id, telegram_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            _active_session_id, tid,
+        )
         _played_track_ids = set()
 
     # Get playlist name + clear queue by starting playlist and pausing
@@ -733,7 +745,7 @@ async def on_vote(callback: CallbackQuery):
     vote_type = parts[1]
     session_track_id = int(parts[2])
 
-    result = await record_vote(_pool, session_track_id, callback.from_user.id, vote_type)
+    result = await record_vote(_pool, session_track_id, callback.from_user.id, vote_type, session_id=_active_session_id)
 
     if result["status"] == "already_voted":
         await callback.answer("Ты уже голосовал за этот трек!")
@@ -805,6 +817,11 @@ async def on_approve(callback: CallbackQuery):
                 "INSERT INTO users (telegram_id, telegram_name) VALUES ($1, $2) ON CONFLICT (telegram_id) DO NOTHING",
                 tid, "",
             )
+            if _active_session_id:
+                await conn.execute(
+                    "INSERT INTO session_participants (session_id, telegram_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    _active_session_id, tid,
+                )
 
     await callback.answer("✅ Одобрено!")
     await callback.message.edit_text(f"{callback.message.text}\n\n✅ Одобрено!", parse_mode="HTML")
@@ -1004,6 +1021,22 @@ async def setup_bot(pool: asyncpg.Pool):
         """)
 
     await load_token_from_db(pool)
+
+    # Recover active session if bot restarted
+    global _active_session_id, _active_playlist_id, _participants
+    async with pool.acquire() as conn:
+        active = await conn.fetchrow(
+            "SELECT id, playlist_spotify_id FROM sessions WHERE status = 'active' ORDER BY id DESC LIMIT 1"
+        )
+        if active:
+            _active_session_id = active["id"]
+            _active_playlist_id = active["playlist_spotify_id"]
+            rows = await conn.fetch(
+                "SELECT telegram_id FROM session_participants WHERE session_id = $1",
+                _active_session_id,
+            )
+            _participants = [r["telegram_id"] for r in rows]
+            log.info(f"Recovered active session {_active_session_id} with {len(_participants)} participants")
 
     # Start duplicate watcher in background
     global _on_duplicate_notify

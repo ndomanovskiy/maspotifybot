@@ -9,7 +9,7 @@ from app.spotify.auth import get_spotify
 log = logging.getLogger(__name__)
 
 
-async def record_vote(pool: asyncpg.Pool, session_track_id: int, telegram_id: int, vote: str) -> dict:
+async def record_vote(pool: asyncpg.Pool, session_track_id: int, telegram_id: int, vote: str, session_id: int | None = None) -> dict:
     """Record a vote and check if threshold is reached. Returns vote status."""
     async with pool.acquire() as conn:
         # Check if already voted
@@ -43,10 +43,16 @@ async def record_vote(pool: asyncpg.Pool, session_track_id: int, telegram_id: in
             session_track_id,
         )
 
-        # Drop if >= 50% of participants voted drop
-        participant_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM users"
-        )
+        # Drop if >= 50% of session participants voted drop
+        if session_id:
+            participant_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM session_participants WHERE session_id = $1",
+                session_id,
+            )
+        else:
+            participant_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM users"
+            )
         drop_threshold = max(1, (participant_count + 1) // 2)  # ceil(50%) — e.g. 4 people = 2, 3 people = 2, 5 people = 3
 
         if drop_count >= drop_threshold:
