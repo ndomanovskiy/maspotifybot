@@ -13,6 +13,9 @@ dependencies = [
     "openai>=1.50.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["app*", "tests*"]
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
