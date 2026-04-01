@@ -37,6 +37,17 @@ def is_admin(telegram_id: int) -> bool:
     return telegram_id == settings.telegram_admin_id
 
 
+async def is_registered(telegram_id: int) -> bool:
+    """Check if user is registered in DB."""
+    if is_admin(telegram_id):
+        return True
+    async with _pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE telegram_id = $1)",
+            telegram_id,
+        )
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
@@ -74,6 +85,9 @@ async def cmd_auth(message: Message):
 
 @dp.message(Command("reg"))
 async def cmd_reg(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Регистрация доступна только через админа.")
+        return
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.answer(
@@ -106,6 +120,9 @@ async def cmd_reg(message: Message):
 
 @dp.message(Command("next"))
 async def cmd_next(message: Message):
+    if not await is_registered(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников TURDOM.")
+        return
     result = await get_next_playlist(_pool)
     if result:
         link = result.get("invite_url") or result["url"]
@@ -145,6 +162,9 @@ async def cmd_setnextlink(message: Message):
 
 @dp.message(Command("check"))
 async def cmd_check(message: Message):
+    if not await is_registered(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников TURDOM.")
+        return
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.answer(
@@ -240,6 +260,9 @@ async def cmd_import(message: Message):
 
 @dp.message(Command("join"))
 async def cmd_join(message: Message):
+    if not await is_registered(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников TURDOM.")
+        return
     tid = message.from_user.id
 
     if is_admin(tid):
@@ -699,6 +722,9 @@ async def _update_vote_buttons(session_track_id: int):
 
 @dp.callback_query(F.data.startswith("vote:"))
 async def on_vote(callback: CallbackQuery):
+    if not await is_registered(callback.from_user.id):
+        await callback.answer("⛔ Только для участников", show_alert=True)
+        return
     parts = callback.data.split(":")
     if len(parts) != 3:
         await callback.answer("Ошибка")
