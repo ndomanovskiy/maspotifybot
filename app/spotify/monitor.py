@@ -69,20 +69,20 @@ class SpotifyMonitor:
         log.info("Monitor stopped")
 
     async def _poll(self):
-        sp = await get_spotify()
-        playback = await sp.playback_currently_playing()
-
-        if playback is None or playback.item is None:
-            self._not_playing_count += 1
-            # If nothing playing for 30+ seconds, playlist likely ended
-            if self._not_playing_count >= 8 and self._current_track_id is not None:
-                log.info("No playback for 30+ sec — playlist likely ended")
-                if self._on_end:
-                    await self._on_end()
-                    self._running = False
+        try:
+            sp = await get_spotify()
+        except Exception as e:
+            log.warning(f"Monitor: failed to get Spotify client: {e}")
             return
 
-        self._not_playing_count = 0
+        try:
+            playback = await sp.playback_currently_playing()
+        except Exception as e:
+            log.warning(f"Monitor: Spotify API error (will retry): {e}")
+            return
+
+        if playback is None or playback.item is None:
+            return
 
         track = playback.item
         is_playing = playback.is_playing

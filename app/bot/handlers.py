@@ -31,6 +31,8 @@ _participants: list[int] = []  # telegram_ids
 _track_messages: dict[int, list[tuple[int, int]]] = {}  # session_track_id -> [(chat_id, message_id)]
 _played_track_ids: set[str] = set()  # spotify track IDs already played this session
 _cached_pre_recap: str | None = None
+_skip_in_progress: set[int] = set()  # session_track_ids currently being skipped (race condition guard)
+_session_message: tuple[int, int] | None = None  # (chat_id, message_id) of session creation message
 
 
 def is_admin(telegram_id: int) -> bool:
@@ -50,6 +52,14 @@ async def is_registered(telegram_id: int) -> bool:
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
+    # Handle deeplinks like /start history_7
+    args = message.text.split(maxsplit=1)
+    if len(args) > 1 and args[1].startswith("history_"):
+        session_id = args[1].replace("history_", "")
+        if session_id.isdigit():
+            await _show_session_details(message, int(session_id))
+            return
+
     await message.answer(
         "🎵 <b>MaSpotifyBot</b> — бот для сессий TURDOM!\n\n"
         "Команды:\n"
@@ -414,10 +424,12 @@ async def _show_history_page(message_or_callback, offset: int):
             await message_or_callback.message.edit_text(text, parse_mode="HTML")
         return
 
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+
     lines = [f"📅 <b>История сессий</b> ({offset + 1}–{min(offset + HISTORY_PAGE_SIZE, total)} из {total})\n"]
     for s in sessions:
         name = s["playlist_name"]
-        # Try to extract clean name
         if "TURDOM" not in name and "playlist" in name.lower():
             name = f"Сессия #{s['id']}"
         date = s["started_at"].strftime("%d/%m/%Y") if s["started_at"] else "?"
@@ -425,9 +437,10 @@ async def _show_history_page(message_or_callback, offset: int):
         kept = s["kept"]
         dropped = s["dropped"]
         parts = s["participants"]
+        deeplink = f"https://t.me/{bot_username}?start=history_{s['id']}"
 
         lines.append(
-            f"<b>{name}</b>\n"
+            f"<a href=\"{deeplink}\"><b>{name}</b></a>\n"
             f"📆 {date} · 🎵 {tracks} треков · 👥 {parts}\n"
             f"✅ {kept} kept · ❌ {dropped} dropped\n"
         )
@@ -444,9 +457,9 @@ async def _show_history_page(message_or_callback, offset: int):
     kb = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
     if hasattr(message_or_callback, 'answer'):
-        await message_or_callback.answer(text, parse_mode="HTML", reply_markup=kb)
+        await message_or_callback.answer(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
     else:
-        await message_or_callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await message_or_callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
 
 @dp.callback_query(F.data.startswith("history:"))
@@ -710,6 +723,47 @@ async def cmd_kick(message: Message):
         pass
 
 
+async def _get_participant_names() -> str:
+    """Get formatted list of participant names."""
+    names = []
+    async with _pool.acquire() as conn:
+        for tid in _participants:
+            row = await conn.fetchrow(
+                "SELECT telegram_username, telegram_name FROM users WHERE telegram_id = $1", tid
+            )
+            if row:
+                name = f"@{row['telegram_username']}" if row["telegram_username"] else row["telegram_name"]
+                names.append(name)
+            else:
+                names.append(str(tid))
+    return ", ".join(names) if names else "—"
+
+
+async def _update_session_message():
+    """Update the session creation message with current participant list."""
+    if not _session_message or not _active_session_id:
+        return
+    try:
+        chat_id, msg_id = _session_message
+        start_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="▶️ Запустить прослушивание!", callback_data="start_listening")
+        ]])
+        async with _pool.acquire() as conn:
+            playlist_name = await conn.fetchval(
+                "SELECT playlist_name FROM sessions WHERE id = $1", _active_session_id
+            )
+        names = await _get_participant_names()
+        await bot.edit_message_text(
+            f"🎧 Сессия создана: <b>{playlist_name}</b>\n"
+            f"👥 Участников: {len(_participants)} — {names}\n\n"
+            f"Жди пока все присоединятся, потом жми кнопку.",
+            chat_id=chat_id, message_id=msg_id,
+            reply_markup=start_kb, parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
 @dp.message(Command("session"))
 async def cmd_session(message: Message):
     global _active_session_id, _active_playlist_id, _played_track_ids
@@ -802,16 +856,19 @@ async def cmd_session(message: Message):
             pass
 
     # Wait for admin to press Start
+    global _session_message
     start_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="▶️ Запустить прослушивание!", callback_data="start_listening")
     ]])
-    await message.answer(
+    names = await _get_participant_names()
+    session_msg = await message.answer(
         f"🎧 Сессия создана: <b>{playlist_name}</b>\n"
-        f"👥 Участников: {len(_participants)}\n\n"
+        f"👥 Участников: {len(_participants)} — {names}\n\n"
         f"Жди пока все присоединятся, потом жми кнопку.",
         reply_markup=start_kb,
         parse_mode="HTML",
     )
+    _session_message = (session_msg.chat.id, session_msg.message_id)
 
 
 @dp.callback_query(F.data == "start_listening")
@@ -824,18 +881,22 @@ async def on_start_listening(callback: CallbackQuery):
         await callback.answer("Нет активной сессии!")
         return
 
-    # Enable shuffle and resume playback (playlist already loaded at /session)
+    # Enable shuffle and start playback with explicit device
     try:
         sp = await get_spotify()
-        await sp.playback_shuffle(True)
-        await sp.playback_resume()
+        devices = await sp.playback_devices()
+        if not devices:
+            await callback.answer("❌ Открой Spotify на устройстве и нажми ещё раз!", show_alert=True)
+            return
+        device_id = devices[0].id
+        await sp.playback_shuffle(True, device_id=device_id)
+        await sp.playback_start_context(f"spotify:playlist:{_active_playlist_id}", device_id=device_id)
     except Exception as e:
         log.error(f"Failed to start playback: {e}")
-        await callback.answer(f"Ошибка Spotify: {e}")
+        await callback.answer(f"Ошибка Spotify: {e}", show_alert=True)
         return
 
     monitor.on_track_change(lambda info: _on_track_change(info))
-    monitor.on_end(lambda: _on_session_end())
 
     # Pre-generate recap teaser in background
     async def _cache_teaser():
@@ -905,7 +966,7 @@ async def cmd_end(message: Message):
 
 
 async def _end_session():
-    global _active_session_id, _active_playlist_id, _current_session_track_id, _played_track_ids
+    global _active_session_id, _active_playlist_id, _current_session_track_id, _played_track_ids, _cached_pre_recap, _session_message
 
     if _active_session_id is None:
         return
@@ -1022,11 +1083,8 @@ async def _end_session():
     _played_track_ids = set()
     _track_messages.clear()
     _cached_pre_recap = None
-
-
-async def _on_session_end():
-    log.info("Playlist ended — auto-ending session")
-    await _end_session()
+    _skip_in_progress.clear()
+    _session_message = None
 
 
 async def _on_track_change(info: TrackInfo):
@@ -1035,13 +1093,26 @@ async def _on_track_change(info: TrackInfo):
     if _active_session_id is None:
         return
 
-    # Playlist looped — end session
+    # Already played — skip to next, but end session if too many skips in a row
     if info.track_id in _played_track_ids:
-        log.info(f"Track {info.track_id} already played — ending session")
-        await _end_session()
+        log.info(f"Track {info.track_id} already played — skipping")
+        try:
+            sp = await get_spotify()
+            await sp.playback_next()
+        except Exception as e:
+            log.error(f"Failed to skip already played track: {e}")
+            # Don't end session — just log, session continues
         return
 
     _played_track_ids.add(info.track_id)
+
+    # Remove voting buttons from previous track card
+    if _current_session_track_id is not None and _current_session_track_id in _track_messages:
+        for chat_id, message_id in _track_messages[_current_session_track_id]:
+            try:
+                await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+            except Exception:
+                pass
 
     session_track_id = await create_session_track(_pool, _active_session_id, info)
     _current_session_track_id = session_track_id
@@ -1090,12 +1161,37 @@ async def _on_track_change(info: TrackInfo):
 
     facts_text = f"\n\n💡 {facts}" if facts else ""
 
+    # Truncate to max 3 artists
+    artist_parts = [a.strip() for a in info.artist.split(",")]
+    if len(artist_parts) > 3:
+        display_artist = ", ".join(artist_parts[:3]) + "…"
+    else:
+        display_artist = info.artist
+
+    # Reserve space for vote result (~50 chars) in caption
+    VOTE_RESULT_RESERVE = 50
+    MAX_CAPTION = 1024 - VOTE_RESULT_RESERVE
+
     text = (
         f"🎵 <a href=\"{track_url}\"><b>{info.title}</b></a>\n"
-        f"🎤 <a href=\"{artist_search_url}\">{info.artist}</a>\n"
+        f"🎤 <a href=\"{artist_search_url}\">{display_artist}</a>\n"
         f"💿 {info.album}"
         f"{added_by_text}{facts_text}"
     )
+
+    # Trim facts if caption too long
+    if len(text) > MAX_CAPTION:
+        max_facts = MAX_CAPTION - len(text) + len(facts_text)
+        if max_facts > 20:
+            facts_text = facts_text[:max_facts - 1] + "…"
+        else:
+            facts_text = ""
+        text = (
+            f"🎵 <a href=\"{track_url}\"><b>{info.title}</b></a>\n"
+            f"🎤 <a href=\"{artist_search_url}\">{display_artist}</a>\n"
+            f"💿 {info.album}"
+            f"{added_by_text}{facts_text}"
+        )
 
     vote_row = [
         InlineKeyboardButton(text="✅ Keep", callback_data=f"vote:keep:{session_track_id}"),
@@ -1152,6 +1248,78 @@ async def _update_vote_buttons(session_track_id: int):
             pass
 
 
+async def _finalize_track_card(session_track_id: int, result_text: str):
+    """Update track card with result and remove voting buttons."""
+    if session_track_id not in _track_messages:
+        return
+
+    for chat_id, message_id in _track_messages[session_track_id]:
+        try:
+            # Try to append result to caption (photo) or text (message)
+            try:
+                msg = await bot.edit_message_caption(
+                    chat_id=chat_id, message_id=message_id,
+                    caption=None,  # will fail, we catch and just remove buttons
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            # Remove buttons
+            await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+        except Exception:
+            pass
+
+    # Send result as reply
+    for chat_id, message_id in _track_messages[session_track_id]:
+        try:
+            await bot.send_message(chat_id, result_text, parse_mode="HTML", reply_to_message_id=message_id)
+        except Exception:
+            pass
+
+
+async def _check_session_complete():
+    """Check if all tracks in session have been voted on — suggest ending."""
+    if _active_session_id is None:
+        return
+
+    async with _pool.acquire() as conn:
+        pending = await conn.fetchval(
+            "SELECT COUNT(*) FROM session_tracks WHERE session_id = $1 AND vote_result = 'pending'",
+            _active_session_id,
+        )
+
+    if pending == 0:
+        end_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🏁 Завершить сессию", callback_data="confirm_end"),
+            InlineKeyboardButton(text="▶️ Продолжить", callback_data="continue_session"),
+        ]])
+        await bot.send_message(
+            settings.telegram_admin_id,
+            "🎵 <b>Все треки прослушаны и оценены!</b>\n\nЗавершить сессию?",
+            reply_markup=end_kb,
+            parse_mode="HTML",
+        )
+
+
+@dp.callback_query(F.data == "confirm_end")
+async def on_confirm_end(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Только ведущий!")
+        return
+    await callback.answer("🏁 Завершаю...")
+    await callback.message.edit_text("🏁 Сессия завершается...", parse_mode="HTML")
+    await _end_session()
+
+
+@dp.callback_query(F.data == "continue_session")
+async def on_continue_session(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Только ведущий!")
+        return
+    await callback.answer("▶️ Продолжаем!")
+    await callback.message.edit_text("▶️ Продолжаем прослушивание!", parse_mode="HTML")
+
+
 @dp.callback_query(F.data.startswith("vote:"))
 async def on_vote(callback: CallbackQuery):
     if not await is_registered(callback.from_user.id):
@@ -1181,36 +1349,44 @@ async def on_vote(callback: CallbackQuery):
     # Update buttons with counts
     await _update_vote_buttons(session_track_id)
 
-    # Drop — remove + skip immediately
-    if result["status"] == "dropped":
-        for tid in _participants:
-            try:
-                await bot.send_message(
-                    tid,
-                    f"🗑 <b>Трек удалён!</b> ({result['drop_count']} drop из {result['participants']} участников)",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-
-        if _active_playlist_id:
-            async with _pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT spotify_track_id FROM session_tracks WHERE id = $1", session_track_id
-                )
-            if row:
-                await remove_track_from_playlist(_active_playlist_id, row["spotify_track_id"])
-                await skip_to_next()
+    # Only act when ALL participants have voted
+    if result["total_votes"] < len(_participants):
         return
 
-    # All voted (any result) — auto-skip
-    if result["total_votes"] >= len(_participants):
-        for tid in _participants:
+    if session_track_id in _skip_in_progress:
+        return
+    _skip_in_progress.add(session_track_id)
+
+    # Determine final result text
+    keep_count = result["total_votes"] - result["drop_count"]
+    vote_result = result.get("vote_result") or ("drop" if result["drop_count"] >= result["threshold"] else "keep")
+    emoji = "❌" if vote_result == "drop" else "✅"
+    result_text = f"{keep_count} за / {result['drop_count']} против — {emoji} {vote_result}"
+
+    # Finalize track card: result + remove buttons
+    await _finalize_track_card(session_track_id, result_text)
+
+    # If drop — remove from playlist
+    if vote_result == "drop" and _active_playlist_id:
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT spotify_track_id FROM session_tracks WHERE id = $1", session_track_id
+            )
+        if row:
             try:
-                await bot.send_message(tid, "✅ Все проголосовали!", parse_mode="HTML")
-            except Exception:
-                pass
-        await skip_to_next()
+                await remove_track_from_playlist(_active_playlist_id, row["spotify_track_id"])
+            except Exception as e:
+                log.error(f"Failed to remove track from playlist: {e}")
+
+    # Skip to next track (only if this is the current track)
+    if session_track_id == _current_session_track_id:
+        try:
+            await skip_to_next()
+        except Exception as e:
+            log.error(f"Failed to skip: {e}")
+
+    # Check if all session tracks are voted — suggest end
+    await _check_session_complete()
 
 
 @dp.callback_query(F.data.startswith("skip:"))
@@ -1249,6 +1425,9 @@ async def on_approve(callback: CallbackQuery):
         await bot.send_message(tid, f"✅ Ты в деле! Участников: {len(_participants)}")
     except Exception:
         pass
+
+    # Update session message with participant list
+    await _update_session_message()
 
 
 @dp.callback_query(F.data.startswith("deny:"))

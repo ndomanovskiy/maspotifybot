@@ -55,15 +55,30 @@ async def record_vote(pool: asyncpg.Pool, session_track_id: int, telegram_id: in
             )
         drop_threshold = max(1, (participant_count + 1) // 2)  # ceil(50%) — e.g. 4 people = 2, 3 people = 2, 5 people = 3
 
+        # Determine and persist vote result
+        vote_result = None
         if drop_count >= drop_threshold:
             await conn.execute(
                 "UPDATE session_tracks SET vote_result = 'drop' WHERE id = $1",
                 session_track_id,
             )
-            return {"status": "dropped", "drop_count": drop_count, "total_votes": total_votes, "threshold": drop_threshold, "participants": participant_count}
+            vote_result = "drop"
+        elif total_votes >= participant_count and drop_count < drop_threshold:
+            await conn.execute(
+                "UPDATE session_tracks SET vote_result = 'keep' WHERE id = $1",
+                session_track_id,
+            )
+            vote_result = "keep"
 
         status = "vote_changed" if vote_changed else "recorded"
-        return {"status": status, "drop_count": drop_count, "total_votes": total_votes, "threshold": drop_threshold, "participants": participant_count}
+        return {
+            "status": status,
+            "vote_result": vote_result,
+            "drop_count": drop_count,
+            "total_votes": total_votes,
+            "threshold": drop_threshold,
+            "participants": participant_count,
+        }
 
 
 async def remove_track_from_playlist(playlist_id: str, track_id: str):
