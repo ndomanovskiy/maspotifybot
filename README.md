@@ -31,10 +31,13 @@ Telegram-бот для музыкальных сессий **TURDOM** — еже
 | `/history` | История сессий |
 | `/check <url>` | Проверить трек на дубликат |
 | `/join` | Присоединиться к сессии |
+| `/leave` | Выйти из сессии |
 | `/session <url>` | Начать сессию (admin) |
 | `/end` | Завершить сессию (admin) |
 | `/create` | Создать следующий плейлист (admin) |
 | `/setnextlink <url>` | Установить invite-ссылку (admin) |
+| `/kick @username` | Кикнуть участника из сессии (admin) |
+| `/scan` | Принудительная проверка дубликатов (admin) |
 | `/reg <spotify_url>` | Зарегистрировать участника (admin) |
 
 ## Запуск
@@ -52,7 +55,7 @@ pip install .[dev]
 pytest tests/ -v
 ```
 
-105 тестов: voting threshold, genre classification, duplicate watcher, access control, stats, history.
+117 тестов: voting threshold, genre classification, duplicate watcher, access control, stats, history, leave/kick.
 
 ## Структура
 
