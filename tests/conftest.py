@@ -129,7 +129,11 @@ class FakeStore:
     def handle_fetchval(self, query: str, args: tuple):
         q = query.strip().lower()
 
-        if "select exists" in q:
+        if "select exists" in q and "users" in q:
+            tid = args[0]
+            return any(u["telegram_id"] == tid for u in self.users)
+
+        if "select exists" in q and "playlist_tracks" in q:
             pid, tid = args[0], args[1]
             return any(t["playlist_id"] == pid and t["spotify_track_id"] == tid
                        for t in self.playlist_tracks)
