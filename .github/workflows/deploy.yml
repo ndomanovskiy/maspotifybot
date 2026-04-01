@@ -21,6 +21,12 @@ jobs:
           SPOTIFY_CLIENT_ID: "test"
           SPOTIFY_CLIENT_SECRET: "test"
         run: pytest tests/ -v
+      - name: Notify tests failed
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+            --data-urlencode "chat_id=${{ secrets.ADMIN_ID }}" \
+            --data-urlencode "text=❌ Тесты упали — деплой отменён"
 
   deploy:
     needs: test
