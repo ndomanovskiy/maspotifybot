@@ -57,6 +57,7 @@ async def cmd_start(message: Message):
         "/next — ссылка на следующий плейлист\n"
         "/stats — общая статистика TURDOM\n"
         "/mystats — твоя персональная статистика\n"
+        "/history — история сессий\n"
         "/check — проверить трек на дубликат\n"
         "/auth — подключить Spotify (админ)\n"
         "/session — начать сессию\n"
@@ -366,6 +367,136 @@ async def cmd_mystats(message: Message):
     msg += f"\n{top_emoji} <b>Профиль: {top_genre} Lover</b>"
 
     await message.answer(msg, parse_mode="HTML")
+
+
+HISTORY_PAGE_SIZE = 5
+
+
+@dp.message(Command("history"))
+async def cmd_history(message: Message):
+    if not await is_registered(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников TURDOM.")
+        return
+
+    args = message.text.split(maxsplit=1)
+
+    # /history N — details for a specific session
+    if len(args) > 1 and args[1].strip().isdigit():
+        session_num = int(args[1].strip())
+        await _show_session_details(message, session_num)
+        return
+
+    # /history — paginated list, page 1
+    await _show_history_page(message, offset=0)
+
+
+async def _show_history_page(message_or_callback, offset: int):
+    async with _pool.acquire() as conn:
+        total = await conn.fetchval("SELECT COUNT(*) FROM sessions")
+        sessions = await conn.fetch("""
+            SELECT s.id, s.playlist_name, s.started_at, s.ended_at,
+                   (SELECT COUNT(*) FROM session_tracks WHERE session_id = s.id) as track_count,
+                   (SELECT COUNT(*) FROM session_tracks WHERE session_id = s.id AND vote_result = 'keep') as kept,
+                   (SELECT COUNT(*) FROM session_tracks WHERE session_id = s.id AND vote_result = 'drop') as dropped,
+                   (SELECT COUNT(*) FROM session_participants WHERE session_id = s.id) as participants
+            FROM sessions s
+            ORDER BY s.started_at DESC
+            LIMIT $1 OFFSET $2
+        """, HISTORY_PAGE_SIZE, offset)
+
+    if not sessions:
+        text = "📅 Нет сессий в истории."
+        if hasattr(message_or_callback, 'answer'):
+            await message_or_callback.answer(text)
+        else:
+            await message_or_callback.message.edit_text(text, parse_mode="HTML")
+        return
+
+    lines = [f"📅 <b>История сессий</b> ({offset + 1}–{min(offset + HISTORY_PAGE_SIZE, total)} из {total})\n"]
+    for s in sessions:
+        name = s["playlist_name"]
+        # Try to extract clean name
+        if "TURDOM" not in name and "playlist" in name.lower():
+            name = f"Сессия #{s['id']}"
+        date = s["started_at"].strftime("%d/%m/%Y") if s["started_at"] else "?"
+        tracks = s["track_count"]
+        kept = s["kept"]
+        dropped = s["dropped"]
+        parts = s["participants"]
+
+        lines.append(
+            f"<b>{name}</b>\n"
+            f"📆 {date} · 🎵 {tracks} треков · 👥 {parts}\n"
+            f"✅ {kept} kept · ❌ {dropped} dropped\n"
+        )
+
+    text = "\n".join(lines)
+
+    # Pagination buttons
+    buttons = []
+    if offset > 0:
+        buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"history:{offset - HISTORY_PAGE_SIZE}"))
+    if offset + HISTORY_PAGE_SIZE < total:
+        buttons.append(InlineKeyboardButton(text="▶️ Далее", callback_data=f"history:{offset + HISTORY_PAGE_SIZE}"))
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
+
+    if hasattr(message_or_callback, 'answer'):
+        await message_or_callback.answer(text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await message_or_callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("history:"))
+async def on_history_page(callback: CallbackQuery):
+    if not await is_registered(callback.from_user.id):
+        await callback.answer("⛔ Только для участников", show_alert=True)
+        return
+    offset = int(callback.data.split(":")[1])
+    await callback.answer()
+    await _show_history_page(callback, offset=max(0, offset))
+
+
+async def _show_session_details(message: Message, session_num: int):
+    """Show detailed view of a specific session."""
+    async with _pool.acquire() as conn:
+        session = await conn.fetchrow("""
+            SELECT s.id, s.playlist_name, s.started_at, s.ended_at,
+                   (SELECT COUNT(*) FROM session_participants WHERE session_id = s.id) as participants
+            FROM sessions s WHERE s.id = $1
+        """, session_num)
+
+        if not session:
+            await message.answer(f"Сессия #{session_num} не найдена.")
+            return
+
+        tracks = await conn.fetch("""
+            SELECT st.title, st.artist, st.vote_result,
+                   COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, '?') as added_by
+            FROM session_tracks st
+            LEFT JOIN users u ON st.added_by_spotify_id = u.spotify_id
+            WHERE st.session_id = $1
+            ORDER BY st.position, st.id
+        """, session_num)
+
+    name = session["playlist_name"]
+    date = session["started_at"].strftime("%d/%m/%Y %H:%M") if session["started_at"] else "?"
+    parts = session["participants"]
+
+    lines = [
+        f"📅 <b>{name}</b>",
+        f"📆 {date} · 👥 {parts} участников\n",
+    ]
+
+    for t in tracks:
+        icon = "✅" if t["vote_result"] == "keep" else "❌" if t["vote_result"] == "drop" else "⏳"
+        lines.append(f"{icon} {t['title']} — {t['artist']} ({t['added_by']})")
+
+    kept = sum(1 for t in tracks if t["vote_result"] == "keep")
+    dropped = sum(1 for t in tracks if t["vote_result"] == "drop")
+    lines.append(f"\n🎵 {len(tracks)} треков · ✅ {kept} kept · ❌ {dropped} dropped")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @dp.message(Command("scan"))
