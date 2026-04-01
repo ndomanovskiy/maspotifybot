@@ -639,10 +639,18 @@ async def cmd_session(message: Message):
                 tid, message.from_user.full_name, message.from_user.username or "", True,
             )
 
+    # Get playlist name from Spotify
+    try:
+        sp = await get_spotify()
+        pl_info = await sp.playlist(playlist_id)
+        playlist_name = pl_info.name
+    except Exception:
+        playlist_name = playlist_input[:100]
+
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO sessions (playlist_spotify_id, playlist_name) VALUES ($1, $2) RETURNING id",
-            playlist_id, playlist_input[:100],
+            playlist_id, playlist_name,
         )
         _active_session_id = row["id"]
         _active_playlist_id = playlist_id
