@@ -15,6 +15,11 @@ jobs:
       - name: Install dependencies
         run: pip install .[dev]
       - name: Run tests
+        env:
+          TELEGRAM_BOT_TOKEN: "test"
+          TELEGRAM_ADMIN_ID: "0"
+          SPOTIFY_CLIENT_ID: "test"
+          SPOTIFY_CLIENT_SECRET: "test"
         run: pytest tests/ -v
 
   deploy:
