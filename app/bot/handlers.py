@@ -225,7 +225,7 @@ async def cmd_stats(message: Message):
             SELECT genre, COUNT(*) as cnt
             FROM playlist_tracks
             WHERE genre IS NOT NULL AND genre <> ''
-            GROUP BY genre ORDER BY cnt DESC LIMIT 30
+            GROUP BY genre ORDER BY cnt DESC
         """)
 
     # Classify genres into TURDOM playlists
@@ -332,7 +332,7 @@ async def cmd_mystats(message: Message):
         genre_rows = await conn.fetch("""
             SELECT genre, COUNT(*) as cnt FROM playlist_tracks
             WHERE added_by_spotify_id = $1 AND genre IS NOT NULL AND genre <> ''
-            GROUP BY genre ORDER BY cnt DESC LIMIT 30
+            GROUP BY genre ORDER BY cnt DESC
         """, spotify_id)
 
     from app.services.genre_distributor import classify_track
