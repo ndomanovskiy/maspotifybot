@@ -46,7 +46,7 @@ async def record_vote(pool: asyncpg.Pool, session_track_id: int, telegram_id: in
         # Drop if >= 50% of session participants voted drop
         if session_id:
             participant_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM session_participants WHERE session_id = $1",
+                "SELECT COUNT(*) FROM session_participants WHERE session_id = $1 AND active = TRUE",
                 session_id,
             )
         else:

@@ -63,6 +63,8 @@ async def cmd_start(message: Message):
         "/session — начать сессию\n"
         "/end — завершить сессию\n"
         "/join — присоединиться к голосованию\n"
+        "/leave — выйти из сессии\n"
+        "/kick — кикнуть участника (админ)\n"
         "/setnextlink — установить invite-ссылку для плейлиста (админ)\n"
         "/import_all — импорт всех TURDOM плейлистов (админ)",
         parse_mode="HTML",
@@ -646,6 +648,66 @@ async def cmd_join(message: Message):
         parse_mode="HTML",
     )
     await message.answer("⏳ Запрос отправлен ведущему. Жди подтверждения!")
+
+
+@dp.message(Command("leave"))
+async def cmd_leave(message: Message):
+    if not await is_registered(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников TURDOM.")
+        return
+    tid = message.from_user.id
+
+    if tid not in _participants:
+        await message.answer("Ты не в сессии.")
+        return
+
+    _participants.remove(tid)
+    if _active_session_id:
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE session_participants SET active = FALSE, left_at = NOW() WHERE session_id = $1 AND telegram_id = $2",
+                _active_session_id, tid,
+            )
+    await message.answer(f"👋 Ты вышел из сессии. Участников: {len(_participants)}")
+
+
+@dp.message(Command("kick"))
+async def cmd_kick(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Укажи @username: /kick @username")
+        return
+
+    username = args[1].strip().lstrip("@")
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT telegram_id FROM users WHERE telegram_username = $1", username
+        )
+
+    if not row:
+        await message.answer(f"Юзер @{username} не найден в базе.")
+        return
+
+    tid = row["telegram_id"]
+    if tid not in _participants:
+        await message.answer(f"@{username} не в текущей сессии.")
+        return
+
+    _participants.remove(tid)
+    if _active_session_id:
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE session_participants SET active = FALSE, left_at = NOW() WHERE session_id = $1 AND telegram_id = $2",
+                _active_session_id, tid,
+            )
+    await message.answer(f"👢 @{username} кикнут из сессии. Участников: {len(_participants)}")
+    try:
+        await bot.send_message(tid, "👢 Тебя убрали из текущей сессии.")
+    except Exception:
+        pass
 
 
 @dp.message(Command("session"))
@@ -1390,7 +1452,7 @@ async def setup_bot(pool: asyncpg.Pool):
             _active_session_id = active["id"]
             _active_playlist_id = active["playlist_spotify_id"]
             rows = await conn.fetch(
-                "SELECT telegram_id FROM session_participants WHERE session_id = $1",
+                "SELECT telegram_id FROM session_participants WHERE session_id = $1 AND active = TRUE",
                 _active_session_id,
             )
             _participants = [r["telegram_id"] for r in rows]

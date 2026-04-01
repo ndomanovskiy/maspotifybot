@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS session_participants (
     session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
     telegram_id BIGINT NOT NULL,
     joined_at TIMESTAMPTZ DEFAULT NOW(),
+    left_at TIMESTAMPTZ,
+    active BOOLEAN DEFAULT TRUE,
     UNIQUE (session_id, telegram_id)
 );
 
@@ -95,6 +97,8 @@ CREATE TABLE IF NOT EXISTS votes (
 MIGRATIONS = [
     "ALTER TABLE playlists ADD COLUMN IF NOT EXISTS invite_url TEXT",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_username TEXT",
+    "ALTER TABLE session_participants ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE",
+    "ALTER TABLE session_participants ADD COLUMN IF NOT EXISTS left_at TIMESTAMPTZ",
     """CREATE TABLE IF NOT EXISTS session_participants (
         id SERIAL PRIMARY KEY,
         session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
