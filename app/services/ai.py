@@ -8,6 +8,11 @@ log = logging.getLogger(__name__)
 
 _client: anthropic.AsyncAnthropic | None = None
 
+_HTML_FORMAT_INSTRUCTION = (
+    "Форматируй текст в Telegram HTML: <b>жирный</b>, <i>курсив</i>, <code>код</code>. "
+    "НЕ используй Markdown (**, #, _, `). Только HTML теги."
+)
+
 
 def _get_client() -> anthropic.AsyncAnthropic:
     global _client
@@ -32,7 +37,7 @@ async def generate_track_facts(title: str, artist: str, album: str) -> str:
                 "Факты должны быть увлекательными: история создания, забавные истории, рекорды, связи с другими треками. "
                 "Пиши на русском, неформально, коротко. Без заголовков, просто факты через перенос строки. "
                 "Используй эмоджи умеренно. "
-                "Пиши чистый текст без Markdown разметки (без **, #, _, ` и пр.)."
+                + _HTML_FORMAT_INSTRUCTION
             ),
             messages=[
                 {
@@ -69,7 +74,7 @@ async def generate_pre_recap_teaser(
                 "Задача: создать интригу. Обыграй количество треков, участников, кто больше всех накидал. "
                 "Заверши чем-то типа 'Чем всё закончилось? 🥁' или 'А теперь — итоги!' "
                 "Стиль: неформальный, с эмоджи, как шоу-ведущий. "
-                "Чистый текст без Markdown разметки."
+                + _HTML_FORMAT_INSTRUCTION
             ),
             messages=[
                 {
@@ -98,9 +103,6 @@ async def generate_session_recap(
     if not settings.anthropic_api_key:
         return ""
 
-    kept_tracks = [t for t in tracks_data if t["vote_result"] == "keep"]
-    dropped_tracks = [t for t in tracks_data if t["vote_result"] == "drop"]
-
     tracks_info = ""
     for t in tracks_data:
         status = "✅" if t["vote_result"] == "keep" else "❌"
@@ -116,7 +118,7 @@ async def generate_session_recap(
                 "Включи: общую атмосферу, самый спорный трек, MVP сессии (кто добавил больше сохранённых треков), "
                 "шутку или наблюдение. На русском, неформально, с эмоджи. 5-8 предложений. "
                 "Треки указаны в порядке прослушивания. "
-                "ВАЖНО: пиши чистый текст без форматирования. Никакого Markdown, никаких **, #, _ и прочих символов разметки."
+                + _HTML_FORMAT_INSTRUCTION
             ),
             messages=[
                 {
