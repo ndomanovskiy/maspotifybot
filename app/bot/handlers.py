@@ -65,25 +65,39 @@ async def cmd_start(message: Message):
             await _show_session_details(message, int(session_id))
             return
 
-    await message.answer(
-        "🎵 <b>MaSpotifyBot</b> — бот для сессий TURDOM!\n\n"
-        "Команды:\n"
+    msg = (
+        "🎵 <b>TURDOM Assistant</b>\n\n"
+        "📋 <b>Команды:</b>\n"
         "/reg — привязать Spotify аккаунт\n"
         "/next — ссылка на следующий плейлист\n"
+        "/join — присоединиться к сессии\n"
+        "/leave — выйти из сессии\n"
         "/stats — общая статистика TURDOM\n"
         "/mystats — твоя персональная статистика\n"
         "/history — история сессий\n"
-        "/check — проверить трек на дубликат\n"
-        "/auth — подключить Spotify (админ)\n"
-        "/session — начать сессию\n"
-        "/end — завершить сессию\n"
-        "/join — присоединиться к голосованию\n"
-        "/leave — выйти из сессии\n"
-        "/kick — кикнуть участника (админ)\n"
-        "/setnextlink — установить invite-ссылку для плейлиста (админ)\n"
-        "/import_all — импорт всех TURDOM плейлистов (админ)",
-        parse_mode="HTML",
+        "/check — проверить трек на дубликат"
     )
+
+    if is_admin(message.from_user.id):
+        msg += (
+            "\n\n🔧 <b>Админ:</b>\n"
+            "/session — начать сессию\n"
+            "/end — завершить сессию\n"
+            "/kick — кикнуть участника\n"
+            "/distribute — раскидать треки по жанрам\n"
+            "/recap — рекап сессии\n"
+            "/close_playlist — закрыть плейлист\n"
+            "/create_next — создать следующий плейлист\n"
+            "/setnextlink — invite-ссылка для плейлиста\n"
+            "/reschedule — перенести дату плейлиста\n"
+            "/backfill_genres — заполнить жанры\n"
+            "/dbinfo — инфо о базе\n"
+            "/import_all — импорт всех TURDOM плейлистов\n"
+            "/scan — принудительный скан дубликатов\n"
+            "/auth — подключить Spotify"
+        )
+
+    await message.answer(msg, parse_mode="HTML")
 
 
 @dp.message(Command("auth"))
