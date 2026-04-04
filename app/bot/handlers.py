@@ -1731,8 +1731,9 @@ async def on_redistribute(callback: CallbackQuery):
         return
 
     num = int(action)
+    await callback.answer("Запускаю...")
+    await callback.message.edit_text("⏳ Раскидываю треки...", parse_mode="HTML")
     result = await cmd_distribute_force(_pool, num, triggered_by=callback.from_user.id)
-    await callback.answer("Готово")
     await callback.message.edit_text(result["message"], parse_mode="HTML")
 
 

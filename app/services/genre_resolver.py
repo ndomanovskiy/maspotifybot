@@ -16,23 +16,24 @@ log = logging.getLogger(__name__)
 async def resolve_genre(track) -> str:
     """Resolve genre string for a Spotify track object.
 
-    Uses the first artist's genres from Spotify API.
+    Tries each artist's genres until one has them.
     Returns comma-separated genre string, or 'unknown' if no genres found.
     """
     if not track.artists:
         return "unknown"
 
-    artist_id = track.artists[0].id
     sp = await get_spotify()
 
-    try:
-        artist = await sp.artist(artist_id)
-        genres = artist.genres or []
-    except Exception as e:
-        log.warning(f"Failed to fetch artist {artist_id} for genre: {e}")
-        return "unknown"
+    for artist_ref in track.artists:
+        try:
+            artist = await sp.artist(artist_ref.id)
+            genres = artist.genres or []
+            if genres:
+                return ", ".join(genres)
+        except Exception as e:
+            log.warning(f"Failed to fetch artist {artist_ref.id} for genre: {e}")
 
-    return ", ".join(genres) if genres else "unknown"
+    return "unknown"
 
 
 async def resolve_and_save_genre(pool: asyncpg.Pool, track) -> str:
