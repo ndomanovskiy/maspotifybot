@@ -1583,6 +1583,75 @@ async def on_theme_input(message: Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 
+@dp.message(Command("preview"))
+async def cmd_preview(message: Message):
+    """Preview a track card by name or Spotify URL. Admin only."""
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ.")
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Укажи трек: /preview We Are The World\nИли URL: /preview https://open.spotify.com/track/...")
+        return
+
+    query = args[1].strip()
+
+    try:
+        sp = await get_spotify()
+
+        # Check if it's a Spotify URL/URI
+        track_id = _extract_track_id(query)
+        if track_id:
+            track = await sp.track(track_id)
+        else:
+            # Search by name
+            results = await sp.search(query, types=("track",), limit=1)
+            if not results[0].items:
+                await message.answer(f"Трек не найден: {query}")
+                return
+            track = results[0].items[0]
+
+        # Build card
+        track_url = f"https://open.spotify.com/track/{track.id}"
+        artist_parts = [a.name for a in track.artists]
+        first_artist = artist_parts[0]
+        artist_search_url = f"https://open.spotify.com/search/{first_artist.replace(' ', '%20')}"
+
+        if len(artist_parts) > 3:
+            display_artist = ", ".join(artist_parts[:3]) + "…"
+        else:
+            display_artist = ", ".join(artist_parts)
+
+        cover_url = track.album.images[0].url if track.album.images else None
+
+        text = (
+            f"🎵 <a href=\"{track_url}\"><b>{track.name}</b></a>\n"
+            f"🎤 <a href=\"{artist_search_url}\">{display_artist}</a>\n"
+            f"💿 {track.album.name}\n"
+            f"👤 preview mode\n\n"
+            f"💡 Это превью карточки. В сессии будут кнопки Keep/Drop и AI-факты."
+        )
+
+        if cover_url:
+            await message.answer_photo(photo=cover_url, caption=text, parse_mode="HTML")
+        else:
+            await message.answer(text, parse_mode="HTML")
+
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+def _extract_track_id(url_or_id: str) -> str | None:
+    """Extract Spotify track ID from URL or URI."""
+    match = re.search(r"track[/:]([a-zA-Z0-9]+)", url_or_id)
+    if match:
+        return match.group(1)
+    if re.match(r"^[a-zA-Z0-9]{22}$", url_or_id):
+        return url_or_id
+    return None
+
+
 @dp.message(Command("reschedule"))
 async def cmd_reschedule(message: Message):
     if not is_admin(message.from_user.id):
