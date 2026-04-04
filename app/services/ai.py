@@ -1,49 +1,46 @@
 import logging
-from openai import AsyncOpenAI
+
+import anthropic
 
 from app.config import settings
 
 log = logging.getLogger(__name__)
 
-_client: AsyncOpenAI | None = None
+_client: anthropic.AsyncAnthropic | None = None
 
 
-def _get_client() -> AsyncOpenAI:
+def _get_client() -> anthropic.AsyncAnthropic:
     global _client
     if _client is None:
-        _client = AsyncOpenAI(api_key=settings.openai_api_key)
+        _client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     return _client
 
 
 async def generate_track_facts(title: str, artist: str, album: str) -> str:
-    """Generate interesting facts about a track using GPT-4o-mini."""
-    if not settings.openai_api_key:
+    """Generate interesting facts about a track using Claude."""
+    if not settings.anthropic_api_key:
         return ""
 
     client = _get_client()
     try:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            system=(
+                "Ты — музыкальный эксперт для группы друзей TURDOM, которые слушают музыку вместе. "
+                "Напиши 2-3 коротких интересных факта о треке. "
+                "Факты должны быть увлекательными: история создания, забавные истории, рекорды, связи с другими треками. "
+                "Пиши на русском, неформально, коротко. Без заголовков, просто факты через перенос строки. "
+                "Используй эмоджи умеренно."
+            ),
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты — музыкальный эксперт для группы друзей TURDOM, которые слушают музыку вместе. "
-                        "Напиши 2-3 коротких интересных факта о треке. "
-                        "Факты должны быть увлекательными: история создания, забавные истории, рекорды, связи с другими треками. "
-                        "Пиши на русском, неформально, коротко. Без заголовков, просто факты через перенос строки. "
-                        "Используй эмоджи умеренно."
-                    ),
-                },
                 {
                     "role": "user",
                     "content": f"Трек: {title}\nАртист: {artist}\nАльбом: {album}",
                 },
             ],
-            max_tokens=300,
-            temperature=0.8,
         )
-        facts = response.choices[0].message.content.strip()
+        facts = response.content[0].text.strip()
         log.info(f"Generated facts for '{title}' by {artist}")
         return facts
     except Exception as e:
@@ -56,25 +53,23 @@ async def generate_pre_recap_teaser(
     participants: list[str],
     top_contributor: str | None = None,
 ) -> str:
-    """Generate a teaser at session start — builds intrigue for the recap."""
-    if not settings.openai_api_key:
-        return f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем в конце!"
+    """Generate a teaser at session end — builds intrigue before recap."""
+    if not settings.anthropic_api_key:
+        return f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем прямо сейчас!"
 
     client = _get_client()
     try:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=120,
+            system=(
+                "Ты — ведущий музыкальных сессий TURDOM. Напиши короткий тизер (2-3 предложения) "
+                "который будет показан В КОНЦЕ сессии перед итогами. "
+                "Задача: создать интригу. Обыграй количество треков, участников, кто больше всех накидал. "
+                "Заверши чем-то типа 'Чем всё закончилось? 🥁' или 'А теперь — итоги!' "
+                "Стиль: неформальный, с эмоджи, как шоу-ведущий."
+            ),
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты — ведущий музыкальных сессий TURDOM. Напиши короткий тизер (2-3 предложения) "
-                        "который будет показан В КОНЦЕ сессии перед итогами. "
-                        "Задача: создать интригу. Обыграй количество треков, участников, кто больше всех накидал. "
-                        "Заверши чем-то типа 'Чем всё закончилось? 🥁' или 'А теперь — итоги!' "
-                        "Стиль: неформальный, с эмоджи, как шоу-ведущий."
-                    ),
-                },
                 {
                     "role": "user",
                     "content": (
@@ -84,10 +79,8 @@ async def generate_pre_recap_teaser(
                     ),
                 },
             ],
-            max_tokens=120,
-            temperature=1.0,
         )
-        return response.choices[0].message.content.strip()
+        return response.content[0].text.strip()
     except Exception:
         return f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем прямо сейчас! 🥁"
 
@@ -99,11 +92,10 @@ async def generate_session_recap(
     tracks_data: list[dict],
     participants: list[str],
 ) -> str:
-    """Generate an engaging session recap using GPT-4o-mini."""
-    if not settings.openai_api_key:
+    """Generate an engaging session recap using Claude."""
+    if not settings.anthropic_api_key:
         return ""
 
-    # Build context about the session
     kept_tracks = [t for t in tracks_data if t["vote_result"] == "keep"]
     dropped_tracks = [t for t in tracks_data if t["vote_result"] == "drop"]
 
@@ -114,17 +106,15 @@ async def generate_session_recap(
 
     client = _get_client()
     try:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            system=(
+                "Ты — ведущий музыкальных сессий TURDOM. Напиши весёлый рекап сессии. "
+                "Включи: общую атмосферу, самый спорный трек, MVP сессии (кто добавил больше сохранённых треков), "
+                "шутку или наблюдение. На русском, неформально, с эмоджи. 5-8 предложений."
+            ),
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты — ведущий музыкальных сессий TURDOM. Напиши весёлый рекап сессии. "
-                        "Включи: общую атмосферу, самый спорный трек, MVP сессии (кто добавил больше сохранённых треков), "
-                        "шутку или наблюдение. На русском, неформально, с эмоджи. 5-8 предложений."
-                    ),
-                },
                 {
                     "role": "user",
                     "content": (
@@ -134,10 +124,8 @@ async def generate_session_recap(
                     ),
                 },
             ],
-            max_tokens=400,
-            temperature=0.9,
         )
-        recap = response.choices[0].message.content.strip()
+        recap = response.content[0].text.strip()
         log.info("Generated AI session recap")
         return recap
     except Exception as e:

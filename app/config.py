@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://maspotify:maspotify@db:5432/maspotify"
 
     # AI
-    openai_api_key: str = ""
+    anthropic_api_key: str = ""
 
     # Voting
     vote_drop_threshold: int = 2
