@@ -106,6 +106,22 @@ MIGRATIONS = [
         joined_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE (session_id, telegram_id)
     )""",
+    # v2: admin commands & action logging
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS recap_text TEXT",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS distributed_at TIMESTAMPTZ",
+    "ALTER TABLE playlist_tracks ADD COLUMN IF NOT EXISTS genre TEXT",
+    """CREATE TABLE IF NOT EXISTS action_log (
+        id SERIAL PRIMARY KEY,
+        action TEXT NOT NULL,
+        turdom_number INTEGER,
+        session_id INTEGER,
+        playlist_id INTEGER,
+        triggered_by BIGINT,
+        params JSONB,
+        result JSONB,
+        status TEXT DEFAULT 'ok',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )""",
 ]
 
 

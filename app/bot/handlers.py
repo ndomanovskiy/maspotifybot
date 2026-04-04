@@ -15,6 +15,10 @@ from app.services.playlists import import_playlist, import_all_turdom, check_dup
 from app.services.duplicate_watcher import DuplicateWatcher
 from app.services.ai import generate_track_facts, generate_session_recap, generate_pre_recap_teaser
 from app.services.genre_distributor import distribute_session_tracks
+from app.services.admin_commands import (
+    cmd_distribute, cmd_distribute_force, cmd_recap, cmd_recap_regenerate,
+    cmd_close_playlist, cmd_create_next, cmd_dbinfo, log_action, check_duplicate_session,
+)
 
 log = logging.getLogger(__name__)
 
@@ -809,6 +813,14 @@ async def cmd_session(message: Message):
     except Exception:
         playlist_name = playlist_input[:100]
 
+    # Check if a session already exists for this playlist
+    if await check_duplicate_session(_pool, playlist_id):
+        await message.answer(
+            f"🚫 Для этого плейлиста уже есть сессия! Нельзя создать вторую.",
+            parse_mode="HTML",
+        )
+        return
+
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO sessions (playlist_spotify_id, playlist_name) VALUES ($1, $2) RETURNING id",
@@ -1034,6 +1046,12 @@ async def _end_session():
     )
     if ai_recap:
         recap += f"\n\n🤖 <b>AI Recap:</b>\n{ai_recap}"
+        # Save recap to DB
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE sessions SET recap_text = $1 WHERE id = $2",
+                ai_recap, session_id_to_end,
+            )
 
     for tid in _participants:
         try:
@@ -1051,29 +1069,36 @@ async def _end_session():
                     await bot.send_message(tid, dist_msg, parse_mode="HTML")
                 except Exception:
                     pass
+        # Mark as distributed
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE sessions SET distributed_at = NOW() WHERE id = $1",
+                session_id_to_end,
+            )
     except Exception as e:
         log.error(f"Genre distribution failed: {e}")
 
-    # Mark current playlist as listened
-    if _active_playlist_id:
-        async with _pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE playlists SET status = 'listened' WHERE spotify_id = $1",
-                _active_playlist_id,
-            )
+    # Log end_session action
+    try:
+        await log_action(
+            _pool, "end_session",
+            session_id=session_id_to_end,
+            result={"total": stats["total"], "kept": stats["kept"], "dropped": stats["dropped"]},
+        )
+    except Exception:
+        pass
 
-    # Offer to create next playlist (admin only)
-    create_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📋 Обычный", callback_data="create_playlist:normal"),
-            InlineKeyboardButton(text="🎭 Тематический", callback_data="create_playlist:thematic"),
-        ],
+    # Note: playlist is NOT auto-closed anymore — use /close_playlist command
+    # Offer admin to run post-session commands
+    post_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Обычный", callback_data="create_playlist:normal"),
+         InlineKeyboardButton(text="🎭 Тематический", callback_data="create_playlist:thematic")],
         [InlineKeyboardButton(text="⏭ Пропустить", callback_data="create_playlist:skip")],
     ])
     await bot.send_message(
         settings.telegram_admin_id,
         "🆕 Создать следующий плейлист?",
-        reply_markup=create_kb,
+        reply_markup=post_kb,
         parse_mode="HTML",
     )
 
@@ -1582,6 +1607,156 @@ async def cmd_reschedule(message: Message):
         )
     else:
         await message.answer("Нет предстоящих плейлистов для переноса.")
+
+
+# ---------------------------------------------------------------------------
+# Admin commands: /distribute, /recap, /close_playlist, /create_next, /dbinfo
+# ---------------------------------------------------------------------------
+
+def _parse_turdom_number(text: str, command: str) -> int | None:
+    """Extract TURDOM number from command arguments like '/distribute 91'."""
+    args = text.split(maxsplit=1)
+    if len(args) < 2:
+        return None
+    try:
+        return int(args[1].strip())
+    except ValueError:
+        return None
+
+
+@dp.message(Command("distribute"))
+async def on_distribute(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ.")
+        return
+
+    num = _parse_turdom_number(message.text, "distribute")
+    if num is None:
+        await message.answer("Укажи номер: /distribute 91")
+        return
+
+    result = await cmd_distribute(_pool, num, triggered_by=message.from_user.id)
+
+    if result["status"] == "already_done":
+        # Ask for confirmation with buttons
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Повторить", callback_data=f"redistribute:{num}"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="redistribute:cancel"),
+        ]])
+        await message.answer(result["message"], reply_markup=kb, parse_mode="HTML")
+    else:
+        await message.answer(result["message"], parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("redistribute:"))
+async def on_redistribute(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Только админ!")
+        return
+
+    action = callback.data.split(":")[1]
+    if action == "cancel":
+        await callback.answer("Ок")
+        await callback.message.edit_text("⏭ Отменено.", parse_mode="HTML")
+        return
+
+    num = int(action)
+    result = await cmd_distribute_force(_pool, num, triggered_by=callback.from_user.id)
+    await callback.answer("Готово")
+    await callback.message.edit_text(result["message"], parse_mode="HTML")
+
+
+@dp.message(Command("recap"))
+async def on_recap(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ.")
+        return
+
+    num = _parse_turdom_number(message.text, "recap")
+    if num is None:
+        await message.answer("Укажи номер: /recap 91")
+        return
+
+    result = await cmd_recap(_pool, num, triggered_by=message.from_user.id)
+
+    if result["status"] == "ok" and result.get("has_saved"):
+        # Offer to regenerate
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔄 Перегенерировать", callback_data=f"rerecap:{num}"),
+        ]])
+        await message.answer(result["message"], reply_markup=kb, parse_mode="HTML")
+    else:
+        await message.answer(result["message"], parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("rerecap:"))
+async def on_rerecap(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Только админ!")
+        return
+
+    num = int(callback.data.split(":")[1])
+    await callback.answer("Генерирую...")
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    result = await cmd_recap_regenerate(_pool, num, triggered_by=callback.from_user.id)
+    await callback.message.answer(result["message"], parse_mode="HTML")
+
+
+@dp.message(Command("close_playlist"))
+async def on_close_playlist(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ.")
+        return
+
+    num = _parse_turdom_number(message.text, "close_playlist")
+    if num is None:
+        await message.answer("Укажи номер: /close_playlist 91")
+        return
+
+    result = await cmd_close_playlist(_pool, num, triggered_by=message.from_user.id)
+    await message.answer(result["message"], parse_mode="HTML")
+
+
+@dp.message(Command("create_next"))
+async def on_create_next(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ.")
+        return
+
+    args = message.text.split(maxsplit=1)
+    theme = args[1].strip() if len(args) > 1 else None
+
+    result = await cmd_create_next(_pool, theme=theme, triggered_by=message.from_user.id)
+
+    if result["status"] == "blocked":
+        await message.answer(result["message"], parse_mode="HTML")
+        return
+
+    await message.answer(result["message"], parse_mode="HTML")
+
+    # Notify participants from last session
+    for tid in result.get("notify_ids", []):
+        if tid != message.from_user.id:
+            try:
+                pl = result["playlist"]
+                await bot.send_message(
+                    tid,
+                    f"🆕 <b>Новый плейлист:</b> {pl['name']}\n\nДобавляйте треки!\n{pl['url']}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+
+@dp.message(Command("dbinfo"))
+async def on_dbinfo(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ.")
+        return
+
+    text = await cmd_dbinfo(_pool)
+    await message.answer(text, parse_mode="HTML")
 
 
 def _extract_spotify_user_id(url_or_id: str) -> str | None:
