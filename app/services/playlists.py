@@ -4,6 +4,7 @@ import logging
 import asyncpg
 
 from app.spotify.auth import get_spotify
+from app.services.genre_resolver import resolve_and_save_genre
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,13 @@ async def import_playlist(pool: asyncpg.Pool, playlist_spotify_id: str) -> dict:
                         added_by, added_at,
                     )
                     imported += 1
+
+                    # Resolve genre from Spotify artist
+                    try:
+                        await resolve_and_save_genre(pool, track)
+                    except Exception as e:
+                        log.warning(f"Failed to resolve genre for '{track.name}': {e}")
+
                 except Exception as e:
                     log.warning(f"Failed to import track {track.id}: {e}")
 

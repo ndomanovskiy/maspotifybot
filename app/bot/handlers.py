@@ -15,6 +15,7 @@ from app.services.playlists import import_playlist, import_all_turdom, check_dup
 from app.services.duplicate_watcher import DuplicateWatcher
 from app.services.ai import generate_track_facts, generate_session_recap, generate_pre_recap_teaser
 from app.services.genre_distributor import distribute_session_tracks
+from app.services.genre_resolver import backfill_genres
 from app.services.admin_commands import (
     cmd_distribute, cmd_distribute_force, cmd_recap, cmd_recap_regenerate,
     cmd_close_playlist, cmd_create_next, cmd_dbinfo, log_action, check_duplicate_session,
@@ -1826,6 +1827,25 @@ async def on_dbinfo(message: Message):
 
     text = await cmd_dbinfo(_pool)
     await message.answer(text, parse_mode="HTML")
+
+
+@dp.message(Command("backfill_genres"))
+async def on_backfill_genres(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ.")
+        return
+
+    await message.answer("⏳ Запускаю бэкфилл жанров...")
+    try:
+        result = await backfill_genres(_pool)
+        await message.answer(
+            f"✅ Бэкфилл готов!\n"
+            f"Обработано: {result['processed']}\n"
+            f"Жанры найдены: {result['resolved']}"
+        )
+    except Exception as e:
+        log.error(f"Genre backfill failed: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 def _extract_spotify_user_id(url_or_id: str) -> str | None:

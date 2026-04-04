@@ -7,6 +7,7 @@ import asyncpg
 from app.spotify.auth import get_spotify
 from app.services.playlists import check_duplicate, get_track_isrc
 from app.services.ai import generate_track_facts
+from app.services.genre_resolver import resolve_and_save_genre
 
 log = logging.getLogger(__name__)
 
@@ -152,6 +153,12 @@ class DuplicateWatcher:
                         )
                     except Exception as e:
                         log.warning(f"Failed to save new track: {e}")
+
+                # Resolve genre from Spotify artist
+                try:
+                    await resolve_and_save_genre(self._pool, track)
+                except Exception as e:
+                    log.warning(f"Failed to resolve genre for '{track.name}': {e}")
 
                 # Check for duplicates in OTHER playlists
                 if not isrc:
