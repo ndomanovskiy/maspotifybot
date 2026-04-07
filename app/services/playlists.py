@@ -202,7 +202,9 @@ async def create_next_playlist(pool: asyncpg.Pool, theme: str | None = None) -> 
         is_thematic = False
 
     # Create in Spotify
-    pl = await sp.playlist_create(user_id, name, public=False, collaborative=True, description="TURDOM listening session")
+    pl = await sp.playlist_create(user_id, name, public=False, description="TURDOM listening session")
+    # Make collaborative (tekore 6.x removed collaborative param from playlist_create)
+    await sp.playlist_change_details(pl.id, collaborative=True)
     playlist_spotify_id = pl.id
     url = f"https://open.spotify.com/playlist/{playlist_spotify_id}"
 
