@@ -717,26 +717,20 @@ async def cmd_secret(message: Message):
         await message.answer("⛔ Доступ только для участников TURDOM.")
         return
 
-    # Find upcoming/active playlist and its session (or latest session as fallback)
+    if not _active_session_id:
+        await message.answer("Сессия ещё не запущена. Секрет можно оставить после /session.")
+        return
+
+    session_id = _active_session_id
+
+    # Find playlist for track lookup
     async with _pool.acquire() as conn:
         upcoming_pl = await conn.fetchrow(
-            "SELECT id, spotify_id FROM playlists WHERE status IN ('active', 'upcoming') ORDER BY number DESC LIMIT 1"
+            """SELECT p.id FROM playlists p
+               JOIN sessions s ON s.playlist_spotify_id = p.spotify_id
+               WHERE s.id = $1""",
+            session_id,
         )
-        if upcoming_pl:
-            session = await conn.fetchrow(
-                "SELECT id FROM sessions WHERE playlist_spotify_id = $1 ORDER BY id DESC LIMIT 1",
-                upcoming_pl["spotify_id"],
-            )
-            if not session:
-                # No session yet for upcoming playlist — use latest session for storing secret
-                session = await conn.fetchrow("SELECT id FROM sessions ORDER BY id DESC LIMIT 1")
-        else:
-            session = await conn.fetchrow("SELECT id FROM sessions ORDER BY id DESC LIMIT 1")
-            upcoming_pl = None
-
-    if not session:
-        await message.answer("Нет активной или предстоящей сессии.")
-        return
 
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
@@ -744,7 +738,7 @@ async def cmd_secret(message: Message):
         async with _pool.acquire() as conn:
             current = await conn.fetchval(
                 "SELECT secret_note FROM session_participants WHERE session_id = $1 AND telegram_id = $2",
-                session["id"], message.from_user.id,
+                session_id, message.from_user.id,
             )
 
         msg = (
@@ -766,7 +760,6 @@ async def cmd_secret(message: Message):
         return
 
     secret = args[1].strip()
-    session_id = session["id"]
 
     # Save secret
     async with _pool.acquire() as conn:
