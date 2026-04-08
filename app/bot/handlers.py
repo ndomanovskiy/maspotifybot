@@ -93,6 +93,7 @@ async def cmd_start(message: Message):
             "/create_next — создать следующий плейлист\n"
             "/setnextlink — invite-ссылка для плейлиста\n"
             "/reschedule — перенести дату плейлиста\n"
+            "/health — статус upcoming плейлиста\n"
             "/backfill_genres — заполнить жанры\n"
             "/dbinfo — инфо о базе\n"
             "/import_all — импорт всех TURDOM плейлистов\n"
@@ -1860,6 +1861,65 @@ async def on_rerecap(callback: CallbackQuery):
         await _send_recap_carousel(callback.message.chat.id, result["recap_text"], num)
     else:
         await callback.message.answer(result["message"], parse_mode="HTML")
+
+
+@dp.message(Command("health"))
+async def on_health(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админ.")
+        return
+
+    async with _pool.acquire() as conn:
+        pl = await conn.fetchrow(
+            "SELECT id, name, number FROM playlists WHERE status IN ('active', 'upcoming') ORDER BY number DESC LIMIT 1"
+        )
+        if not pl:
+            await message.answer("Нет active/upcoming плейлиста.")
+            return
+
+        stats = await conn.fetchrow("""
+            SELECT COUNT(*) as total,
+                   COUNT(*) FILTER (WHERE ai_facts IS NOT NULL) as with_facts,
+                   COUNT(*) FILTER (WHERE ai_facts IS NULL) as no_facts,
+                   COUNT(*) FILTER (WHERE genre IS NOT NULL AND genre != 'unknown') as with_genre,
+                   COUNT(*) FILTER (WHERE genre IS NULL OR genre = 'unknown') as no_genre
+            FROM playlist_tracks WHERE playlist_id = $1
+        """, pl["id"])
+
+        no_genre_tracks = await conn.fetch("""
+            SELECT title, artist FROM playlist_tracks
+            WHERE playlist_id = $1 AND (genre IS NULL OR genre = 'unknown')
+            ORDER BY title
+        """, pl["id"])
+
+        no_facts_tracks = await conn.fetch("""
+            SELECT title, artist FROM playlist_tracks
+            WHERE playlist_id = $1 AND ai_facts IS NULL
+            ORDER BY title
+        """, pl["id"])
+
+    lines = [f"🩺 <b>Health: {pl['name']}</b>\n"]
+    lines.append(f"🎵 Треков: {stats['total']}")
+    lines.append(f"💡 Факты: {stats['with_facts']}/{stats['total']}")
+    lines.append(f"🎸 Жанры: {stats['with_genre']}/{stats['total']}")
+
+    if stats["no_facts"] > 0:
+        lines.append(f"\n❌ <b>Без фактов ({stats['no_facts']}):</b>")
+        for t in no_facts_tracks:
+            lines.append(f"   • {t['title']} — {t['artist']}")
+
+    if stats["no_genre"] > 0:
+        lines.append(f"\n❌ <b>Без жанра ({stats['no_genre']}):</b>")
+        for t in no_genre_tracks:
+            lines.append(f"   • {t['title']} — {t['artist']}")
+        lines.append(f"\n<i>Причина: у артистов нет жанров в Spotify API</i>")
+
+    if stats["no_facts"] == 0 and stats["no_genre"] == 0:
+        lines.append(f"\n✅ Всё готово к сессии!")
+    elif stats["no_facts"] == 0:
+        lines.append(f"\n✅ Факты готовы, жанры частично (Spotify API ограничение)")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @dp.message(Command("close_playlist"))
