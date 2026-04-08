@@ -96,28 +96,38 @@ async def generate_session_recap(
     total_tracks: int,
     kept: int,
     dropped: int,
-    tracks_data: list[dict],
+    tracks_info: str,
     participants: list[str],
+    mimic_info: str,
+    rebel_info: str,
+    killers_info: str,
 ) -> str:
-    """Generate an engaging session recap using Claude."""
+    """Generate AI commentary for session recap."""
     if not settings.anthropic_api_key:
         return ""
-
-    tracks_info = ""
-    for t in tracks_data:
-        status = "✅" if t["vote_result"] == "keep" else "❌"
-        tracks_info += f"{status} {t['title']} — {t['artist']} (added by {t.get('added_by', '?')})\n"
 
     client = _get_client()
     try:
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=400,
+            max_tokens=600,
             system=(
-                "Ты — TURDOM Assistant, ведущий музыкальных сессий. Напиши весёлый рекап сессии. "
-                "Включи: общую атмосферу, самый спорный трек, MVP сессии (кто добавил больше сохранённых треков), "
-                "шутку или наблюдение. На русском, неформально, с эмоджи. 5-8 предложений. "
-                "Треки указаны в порядке прослушивания. "
+                "Ты — TURDOM Assistant, ведущий музыкальных сессий группы друзей. "
+                "Напиши комментарий к рекапу сессии. Структура:\n\n"
+                "1. Каким треком начали, каким закончили — по паре слов о каждом. "
+                "Какая была атмосфера сессии в целом.\n"
+                "2. Если были резкие жанровые переходы (например от металкора к попу) — "
+                "подчеркни это с юмором.\n"
+                "3. Мимик сессии — человек который лучше всех попадает в общий вайб группы. "
+                "Подбери ему подходящее смешное звание в зависимости от атмосферы сессии "
+                "(например 'Мимик', 'Телепат', 'Вайбмейкер' и т.п.). Распиши коротко.\n"
+                "4. Бунтарь — человек чьи треки дропали чаще всего. Он идёт против системы. "
+                "Опиши с юмором. Потом напиши кто его 'Киллеры' — те кто голосовал против его треков. "
+                "Подай это смешно, типа 'больше всего ударов в спину нанесли...'.\n"
+                "5. Если в треках есть интересные совпадения (артисты из одной страны, "
+                "похожие названия, связи между треками из фактов) — отметь.\n\n"
+                "Пиши на русском, неформально, с эмоджи. Не повторяй числа и статистику — "
+                "они уже показаны выше. Просто комментарий от ведущего.\n"
                 + _HTML_FORMAT_INSTRUCTION
             ),
             messages=[
@@ -125,8 +135,9 @@ async def generate_session_recap(
                     "role": "user",
                     "content": (
                         f"Участники: {', '.join(participants)}\n"
-                        f"Всего треков: {total_tracks}, оставлено: {kept}, удалено: {dropped}\n\n"
-                        f"Треки:\n{tracks_info}"
+                        f"Всего: {total_tracks}, осталось: {kept}, удалено: {dropped}\n"
+                        f"{mimic_info}\n{rebel_info}\n{killers_info}\n\n"
+                        f"Треки (в порядке прослушивания, с жанрами и фактами):\n{tracks_info}"
                     ),
                 },
             ],

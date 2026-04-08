@@ -374,8 +374,8 @@ class TestRecap:
         result = run(cmd_recap(admin_pool, 91))
         assert result["status"] == "ok"
         assert result["has_saved"] is False
-        assert "Generated recap" in result["message"]
-        assert sess["recap_text"] == "Generated recap"
+        assert "TURDOM#91" in result["message"]
+        assert "Generated recap" in sess["recap_text"]
 
 
 # ---------------------------------------------------------------------------

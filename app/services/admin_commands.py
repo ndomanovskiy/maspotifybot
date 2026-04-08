@@ -265,42 +265,147 @@ async def cmd_recap_regenerate(pool: asyncpg.Pool, turdom_number: int, triggered
 async def _generate_and_save_recap(
     pool: asyncpg.Pool, session_id: int, turdom_number: int, triggered_by: int | None
 ) -> str:
-    """Generate recap via AI, save to DB, log action."""
+    """Generate structured recap with stats + AI commentary."""
+    from app.services.genre_distributor import classify_track
+
     async with pool.acquire() as conn:
-        stats = await conn.fetchrow(
-            """SELECT COUNT(*) as total,
-                      COUNT(*) FILTER (WHERE vote_result = 'keep') as kept,
-                      COUNT(*) FILTER (WHERE vote_result = 'drop') as dropped
-               FROM session_tracks WHERE session_id = $1""",
-            session_id,
-        )
+        # Tracks in listening order with genres and facts
         tracks_data = [dict(r) for r in await conn.fetch(
-            """SELECT st.title, st.artist, st.vote_result, st.added_by_spotify_id,
-                      COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, st.added_by_spotify_id, '?') as added_by
+            """SELECT st.id, st.title, st.artist, st.vote_result, st.added_by_spotify_id,
+                      COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, st.added_by_spotify_id, '?') as added_by,
+                      pt.genre, pt.ai_facts
                FROM session_tracks st
                LEFT JOIN users u ON st.added_by_spotify_id = u.spotify_id
+               LEFT JOIN playlist_tracks pt ON st.spotify_track_id = pt.spotify_track_id
                WHERE st.session_id = $1
                ORDER BY st.created_at""",
             session_id,
         )]
-        participant_names = [r["telegram_name"] for r in await conn.fetch(
-            """SELECT u.telegram_name FROM session_participants sp
+
+        # Vote details: who voted drop on which track
+        drop_votes = await conn.fetch(
+            """SELECT v.session_track_id, v.telegram_id,
+                      COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, '?') as voter_name
+               FROM votes v
+               JOIN users u ON v.telegram_id = u.telegram_id
+               WHERE v.session_track_id IN (
+                   SELECT id FROM session_tracks WHERE session_id = $1
+               ) AND v.vote = 'drop'""",
+            session_id,
+        )
+
+        participant_names = [r["name"] for r in await conn.fetch(
+            """SELECT COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name) as name
+               FROM session_participants sp
                JOIN users u ON sp.telegram_id = u.telegram_id
                WHERE sp.session_id = $1""",
             session_id,
         )]
 
-    recap_text = await generate_session_recap(
-        stats["total"], stats["kept"], stats["dropped"],
-        tracks_data, participant_names,
+    total = len(tracks_data)
+    kept = sum(1 for t in tracks_data if t["vote_result"] == "keep")
+    dropped = total - kept
+
+    # --- Per-user stats ---
+    user_stats: dict[str, dict] = {}
+    for t in tracks_data:
+        name = t["added_by"]
+        if name not in user_stats:
+            user_stats[name] = {"kept": 0, "total": 0}
+        user_stats[name]["total"] += 1
+        if t["vote_result"] == "keep":
+            user_stats[name]["kept"] += 1
+
+    # --- Genre mix ---
+    genre_counts: dict[str, int] = {}
+    for t in tracks_data:
+        genre = t.get("genre")
+        if genre and genre != "unknown":
+            playlist = classify_track(genre)
+            if playlist:
+                short = playlist.replace("TURDOM ", "")
+                genre_counts[short] = genre_counts.get(short, 0) + 1
+
+    # --- Mimic (best survival %) ---
+    mimic = None
+    best_rate = -1
+    for name, s in user_stats.items():
+        if s["total"] >= 2:  # at least 2 tracks to be meaningful
+            rate = s["kept"] / s["total"]
+            if rate > best_rate:
+                best_rate = rate
+                mimic = name
+
+    # --- Rebel (most drops) ---
+    rebel = None
+    max_drops = 0
+    for name, s in user_stats.items():
+        drops = s["total"] - s["kept"]
+        if drops > max_drops:
+            max_drops = drops
+            rebel = name
+
+    # --- Killers (who voted drop on rebel's tracks most) ---
+    killers: list[str] = []
+    if rebel:
+        # Find rebel's dropped track IDs
+        rebel_dropped_ids = {t["id"] for t in tracks_data
+                            if t["added_by"] == rebel and t["vote_result"] == "drop"}
+        # Count who voted drop on those
+        killer_counts: dict[str, int] = {}
+        for v in drop_votes:
+            if v["session_track_id"] in rebel_dropped_ids:
+                killer_counts[v["voter_name"]] = killer_counts.get(v["voter_name"], 0) + 1
+        if killer_counts:
+            max_kills = max(killer_counts.values())
+            killers = [name for name, cnt in killer_counts.items() if cnt == max_kills]
+
+    # === BUILD STATS BLOCK ===
+    lines = [f"📊 <b>TURDOM#{turdom_number} — Рекап</b>\n"]
+    lines.append(f"🎵 {kept} остался{'ось' if kept != 1 else ''}, {dropped} удалили из {total}\n")
+
+    lines.append("👤 <b>Статистика:</b>")
+    for name, s in sorted(user_stats.items(), key=lambda x: -x[1]["kept"]):
+        lines.append(f"   {name} — {s['kept']} из {s['total']}")
+
+    if genre_counts:
+        lines.append(f"\n⚡ <b>Жанровый микс:</b>")
+        genre_str = " · ".join(f"{g} {c}" for g, c in sorted(genre_counts.items(), key=lambda x: -x[1]))
+        lines.append(f"   {genre_str}")
+
+    stats_block = "\n".join(lines)
+
+    # === AI COMMENTARY ===
+    # Build context for AI
+    tracks_for_ai = ""
+    for i, t in enumerate(tracks_data, 1):
+        status = "✅" if t["vote_result"] == "keep" else "❌"
+        genre = t.get("genre")
+        genre_info = f" [{genre}]" if genre and genre != "unknown" else ""
+        facts_info = f" Факты: {t.get('ai_facts')}" if t.get("ai_facts") else ""
+        tracks_for_ai += f"{i}. {status} {t['title']} — {t['artist']} (от {t['added_by']}){genre_info}{facts_info}\n"
+
+    mimic_info = f"Мимик: {mimic} ({user_stats[mimic]['kept']}/{user_stats[mimic]['total']})" if mimic else "нет"
+    rebel_info = f"Бунтарь: {rebel} ({max_drops} дропов)" if rebel else "нет"
+    killers_info = f"Киллеры: {', '.join(killers)}" if killers else "нет"
+
+    ai_comment = await generate_session_recap(
+        total, kept, dropped,
+        tracks_for_ai, participant_names,
+        mimic_info, rebel_info, killers_info,
     )
 
-    if recap_text:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE sessions SET recap_text = $1 WHERE id = $2",
-                recap_text, session_id,
-            )
+    # === COMBINE ===
+    if ai_comment:
+        recap_text = f"{stats_block}\n\n{ai_comment}"
+    else:
+        recap_text = stats_block
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE sessions SET recap_text = $1 WHERE id = $2",
+            recap_text, session_id,
+        )
 
     await log_action(
         pool, "recap_generate",
