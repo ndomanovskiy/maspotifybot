@@ -140,7 +140,7 @@ async def analyze_easter_egg(secret: str, tracks: list[dict]) -> str:
         text, _ = await _call_llm(
             system,
             f"Пасхалка: {secret}\n\nТреки пользователя (формат: Название — Артист):\n{tracks_list}",
-            600,
+            1000,
         )
         return text
     except Exception as e:
