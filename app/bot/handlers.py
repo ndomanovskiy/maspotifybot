@@ -18,7 +18,7 @@ from app.services.duplicate_watcher import DuplicateWatcher
 from app.services.ai import generate_track_facts, generate_pre_recap_teaser
 from app.services.genre_distributor import distribute_session_tracks
 from app.services.genre_resolver import backfill_genres
-from app.services.track_formatter import format_track, format_track_plain
+from app.services.track_formatter import format_track, format_track_plain, format_album
 from app.services.admin_commands import (
     cmd_distribute, cmd_distribute_force, cmd_recap, cmd_recap_regenerate,
     cmd_close_playlist, cmd_create_next, cmd_dbinfo, log_action, check_duplicate_session,
@@ -1207,9 +1207,11 @@ async def _on_track_change(info: TrackInfo):
     VOTE_RESULT_RESERVE = 50
     MAX_CAPTION = 1024 - VOTE_RESULT_RESERVE
 
+    album_display = format_album(info.album)
+
     text = (
         f"🎵 {track_display}\n"
-        f"💿 {info.album}"
+        f"💿 {album_display}"
         f"{added_by_text}{facts_text}"
     )
 
@@ -1217,7 +1219,7 @@ async def _on_track_change(info: TrackInfo):
     if len(text) > MAX_CAPTION and facts_text:
         header = (
             f"🎵 {track_display}\n"
-            f"💿 {info.album}"
+            f"💿 {album_display}"
             f"{added_by_text}"
         )
         available = MAX_CAPTION - len(header) - 3  # 3 for \n\n💡 prefix
@@ -1236,7 +1238,7 @@ async def _on_track_change(info: TrackInfo):
             facts_text = ""
         text = (
             f"🎵 {track_display}\n"
-            f"💿 {info.album}"
+            f"💿 {album_display}"
             f"{added_by_text}{facts_text}"
         )
 
@@ -1634,7 +1636,7 @@ async def cmd_preview(message: Message):
 
         text = (
             f"🎵 {track_display}\n"
-            f"💿 {track.album.name}\n"
+            f"💿 {format_album(track.album.name)}\n"
             f"👤 preview mode\n\n"
             f"💡 Это превью карточки. В сессии будут кнопки Keep/Drop и AI-факты."
         )

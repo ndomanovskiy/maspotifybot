@@ -50,3 +50,11 @@ def format_track_plain(
         artists_str = ", ".join(parts)
 
     return f"{artists_str} — {title}"
+
+
+def format_album(name: str, max_words: int = 3) -> str:
+    """Truncate album name if longer than max_words."""
+    words = name.split()
+    if len(words) > max_words:
+        return " ".join(words[:max_words]) + "..."
+    return name
