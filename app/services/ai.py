@@ -225,7 +225,6 @@ async def generate_session_recap_blocks(
         f"Всего: {total_tracks}, осталось: {kept}, удалено: {dropped}\n"
         f"{mimic_info}\n{rebel_info}\n{killers_info}\n\n"
         f"Треки (в порядке прослушивания, с жанрами и фактами):\n{tracks_info}"
-        f"{eggs_info}"
     )
 
     block_prompts = {
@@ -274,11 +273,16 @@ async def generate_session_recap_blocks(
             "3-5 предложений на каждую пасхалку."
         )
 
-    # Run all 5 blocks in parallel
+    # Run blocks in parallel — dessert gets separate context with eggs
     import asyncio
     keys = list(block_prompts.keys())
+
+    async def _gen_block(key):
+        ctx = user_context + eggs_info if key == "dessert" else user_context
+        return await _generate_recap_block(ctx, block_prompts[key])
+
     results = await asyncio.gather(
-        *[_generate_recap_block(user_context, block_prompts[k]) for k in keys],
+        *[_gen_block(k) for k in keys],
         return_exceptions=True,
     )
 
