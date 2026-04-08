@@ -30,13 +30,17 @@ def format_track(
 
     Returns Telegram HTML string.
     """
-    parts = [a.strip() for a in artist.split(",")]
+    parts = [a.strip() for a in artist.split(",") if a.strip()]
 
-    if len(parts) > max_artists:
-        linked = ", ".join(_artist_link(a) for a in parts[:max_artists])
-        artists_str = f"{linked}..."
+    # Only link artists if we have meaningful names
+    has_valid_artists = parts and all(len(a) > 1 for a in parts)
+
+    if has_valid_artists:
+        display = parts[:max_artists]
+        linked = ", ".join(_artist_link(a) for a in display)
+        artists_str = f"{linked}..." if len(parts) > max_artists else linked
     else:
-        artists_str = ", ".join(_artist_link(a) for a in parts)
+        artists_str = artist
 
     track_str = _track_link(title, track_id)
 
