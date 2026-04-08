@@ -1614,25 +1614,18 @@ async def cmd_preview(message: Message):
 
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer("Укажи трек: /preview We Are The World\nИли URL: /preview https://open.spotify.com/track/...")
+        await message.answer("Укажи ссылку: /preview https://open.spotify.com/track/...")
         return
 
     query = args[1].strip()
+    track_id = _extract_track_id(query)
+    if not track_id:
+        await message.answer("Нужна ссылка на трек в Spotify.")
+        return
 
     try:
         sp = await get_spotify()
-
-        # Check if it's a Spotify URL/URI
-        track_id = _extract_track_id(query)
-        if track_id:
-            track = await sp.track(track_id)
-        else:
-            # Search by name
-            results = await sp.search(query, types=("track",), limit=1)
-            if not results[0].items:
-                await message.answer(f"Трек не найден: {query}")
-                return
-            track = results[0].items[0]
+        track = await sp.track(track_id)
 
         # Build card
         artist_str = ", ".join(a.name for a in track.artists)
