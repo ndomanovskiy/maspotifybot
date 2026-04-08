@@ -1015,23 +1015,6 @@ async def cmd_session(message: Message):
         log.warning(f"Failed to clear queue: {e}")
         playlist_name = playlist_id
 
-    # Notify all registered users
-    join_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Присоединиться!", callback_data="join_session")
-    ]])
-    async with _pool.acquire() as conn:
-        all_users = await conn.fetch("SELECT telegram_id FROM users WHERE telegram_id != $1", message.from_user.id)
-    for row in all_users:
-        try:
-            await bot.send_message(
-                row["telegram_id"],
-                f"🎶 <b>Новая сессия!</b>\n\n🎧 Плейлист: <b>{playlist_name}</b>\n\nХочешь присоединиться?",
-                reply_markup=join_kb,
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
     # Wait for admin to press Start
     global _session_message
     start_kb = InlineKeyboardMarkup(inline_keyboard=[[
