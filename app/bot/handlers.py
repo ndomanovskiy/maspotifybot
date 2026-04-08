@@ -1733,17 +1733,27 @@ async def on_redistribute(callback: CallbackQuery):
     await callback.message.edit_text(result["message"], parse_mode="HTML")
 
 
-async def _send_recap_blocks(chat_id: int, recap_text: str, add_regenerate: int | None = None):
-    """Send recap as separate messages, split by --- separator."""
+def _recap_keyboard(turdom_num: int, page: int, total: int) -> InlineKeyboardMarkup:
+    """Build carousel keyboard for recap blocks."""
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton(text="←", callback_data=f"recap_page:{turdom_num}:{page - 1}"))
+    buttons.append(InlineKeyboardButton(text=f"{page + 1}/{total}", callback_data="noop"))
+    if page < total - 1:
+        buttons.append(InlineKeyboardButton(text="→", callback_data=f"recap_page:{turdom_num}:{page + 1}"))
+    rows = [buttons]
+    if page == total - 1:
+        rows.append([InlineKeyboardButton(text="🔄 Перегенерировать", callback_data=f"rerecap:{turdom_num}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _send_recap_carousel(chat_id: int, recap_text: str, turdom_num: int):
+    """Send first recap block as carousel with ← → navigation."""
     blocks = [b.strip() for b in recap_text.split("\n\n---\n\n") if b.strip()]
-    for i, block in enumerate(blocks):
-        is_last = i == len(blocks) - 1
-        kb = None
-        if is_last and add_regenerate is not None:
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔄 Перегенерировать", callback_data=f"rerecap:{add_regenerate}"),
-            ]])
-        await bot.send_message(chat_id, block, parse_mode="HTML", reply_markup=kb)
+    if not blocks:
+        return
+    kb = _recap_keyboard(turdom_num, 0, len(blocks))
+    await bot.send_message(chat_id, blocks[0], parse_mode="HTML", reply_markup=kb)
 
 
 @dp.message(Command("recap"))
@@ -1764,8 +1774,43 @@ async def on_recap(message: Message):
         return
 
     recap_text = result.get("recap_text", result["message"])
-    regen_num = num if result.get("has_saved") else None
-    await _send_recap_blocks(message.chat.id, recap_text, add_regenerate=regen_num)
+    await _send_recap_carousel(message.chat.id, recap_text, num)
+
+
+@dp.callback_query(F.data.startswith("recap_page:"))
+async def on_recap_page(callback: CallbackQuery):
+    """Carousel navigation for recap blocks."""
+    parts = callback.data.split(":")
+    turdom_num = int(parts[1])
+    page = int(parts[2])
+
+    # Get saved recap from DB
+    async with _pool.acquire() as conn:
+        pl = await conn.fetchrow("SELECT spotify_id FROM playlists WHERE number = $1", turdom_num)
+        if pl:
+            recap_text = await conn.fetchval(
+                """SELECT recap_text FROM sessions
+                   WHERE playlist_spotify_id = $1 ORDER BY id DESC LIMIT 1""",
+                pl["spotify_id"],
+            )
+
+    if not recap_text:
+        await callback.answer("Рекап не найден")
+        return
+
+    blocks = [b.strip() for b in recap_text.split("\n\n---\n\n") if b.strip()]
+    if page < 0 or page >= len(blocks):
+        await callback.answer("Нет такой страницы")
+        return
+
+    kb = _recap_keyboard(turdom_num, page, len(blocks))
+    await callback.message.edit_text(blocks[page], parse_mode="HTML", reply_markup=kb)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "noop")
+async def on_noop(callback: CallbackQuery):
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("rerecap:"))
@@ -1781,7 +1826,7 @@ async def on_rerecap(callback: CallbackQuery):
     result = await cmd_recap_regenerate(_pool, num, triggered_by=callback.from_user.id)
 
     if result["status"] == "ok" and result.get("recap_text"):
-        await _send_recap_blocks(callback.message.chat.id, result["recap_text"], add_regenerate=num)
+        await _send_recap_carousel(callback.message.chat.id, result["recap_text"], num)
     else:
         await callback.message.answer(result["message"], parse_mode="HTML")
 
