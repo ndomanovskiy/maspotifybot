@@ -1213,11 +1213,25 @@ async def _on_track_change(info: TrackInfo):
         f"{added_by_text}{facts_text}"
     )
 
-    # Trim facts if caption too long
-    if len(text) > MAX_CAPTION:
-        max_facts = MAX_CAPTION - len(text) + len(facts_text)
-        if max_facts > 20:
-            facts_text = facts_text[:max_facts - 1] + "…"
+    # Trim facts by removing lines from bottom until it fits
+    if len(text) > MAX_CAPTION and facts_text:
+        header = (
+            f"🎵 {track_display}\n"
+            f"💿 {info.album}"
+            f"{added_by_text}"
+        )
+        available = MAX_CAPTION - len(header) - 3  # 3 for \n\n💡 prefix
+        if available > 30:
+            fact_lines = facts.split("\n")
+            trimmed = []
+            total = 0
+            for line in fact_lines:
+                if total + len(line) + 1 <= available:
+                    trimmed.append(line)
+                    total += len(line) + 1
+                else:
+                    break
+            facts_text = f"\n\n💡 " + "\n".join(trimmed) if trimmed else ""
         else:
             facts_text = ""
         text = (
