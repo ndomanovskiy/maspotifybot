@@ -13,7 +13,7 @@ from app.spotify.monitor import SpotifyMonitor, TrackInfo
 from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next, create_session_track
 from app.services.playlists import import_playlist, import_all_turdom, check_duplicate, get_track_isrc, get_next_playlist, create_next_playlist, reschedule_playlist
 from app.services.duplicate_watcher import DuplicateWatcher
-from app.services.ai import generate_track_facts, generate_session_recap, generate_pre_recap_teaser
+from app.services.ai import generate_track_facts, generate_pre_recap_teaser
 from app.services.genre_distributor import distribute_session_tracks
 from app.services.genre_resolver import backfill_genres
 from app.services.track_formatter import format_track, format_track_plain
@@ -1733,6 +1733,19 @@ async def on_redistribute(callback: CallbackQuery):
     await callback.message.edit_text(result["message"], parse_mode="HTML")
 
 
+async def _send_recap_blocks(chat_id: int, recap_text: str, add_regenerate: int | None = None):
+    """Send recap as separate messages, split by --- separator."""
+    blocks = [b.strip() for b in recap_text.split("\n\n---\n\n") if b.strip()]
+    for i, block in enumerate(blocks):
+        is_last = i == len(blocks) - 1
+        kb = None
+        if is_last and add_regenerate is not None:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔄 Перегенерировать", callback_data=f"rerecap:{add_regenerate}"),
+            ]])
+        await bot.send_message(chat_id, block, parse_mode="HTML", reply_markup=kb)
+
+
 @dp.message(Command("recap"))
 async def on_recap(message: Message):
     if not is_admin(message.from_user.id):
@@ -1746,14 +1759,13 @@ async def on_recap(message: Message):
 
     result = await cmd_recap(_pool, num, triggered_by=message.from_user.id)
 
-    if result["status"] == "ok" and result.get("has_saved"):
-        # Offer to regenerate
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🔄 Перегенерировать", callback_data=f"rerecap:{num}"),
-        ]])
-        await message.answer(result["message"], reply_markup=kb, parse_mode="HTML")
-    else:
+    if result["status"] != "ok":
         await message.answer(result["message"], parse_mode="HTML")
+        return
+
+    recap_text = result.get("recap_text", result["message"])
+    regen_num = num if result.get("has_saved") else None
+    await _send_recap_blocks(message.chat.id, recap_text, add_regenerate=regen_num)
 
 
 @dp.callback_query(F.data.startswith("rerecap:"))
@@ -1767,7 +1779,11 @@ async def on_rerecap(callback: CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
 
     result = await cmd_recap_regenerate(_pool, num, triggered_by=callback.from_user.id)
-    await callback.message.answer(result["message"], parse_mode="HTML")
+
+    if result["status"] == "ok" and result.get("recap_text"):
+        await _send_recap_blocks(callback.message.chat.id, result["recap_text"], add_regenerate=num)
+    else:
+        await callback.message.answer(result["message"], parse_mode="HTML")
 
 
 @dp.message(Command("close_playlist"))

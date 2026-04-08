@@ -92,7 +92,7 @@ async def generate_pre_recap_teaser(
         return f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем прямо сейчас! 🥁"
 
 
-async def generate_session_recap(
+async def generate_session_recap_blocks(
     total_tracks: int,
     kept: int,
     dropped: int,
@@ -101,33 +101,39 @@ async def generate_session_recap(
     mimic_info: str,
     rebel_info: str,
     killers_info: str,
-) -> str:
-    """Generate AI commentary for session recap."""
+) -> dict[str, str]:
+    """Generate AI commentary blocks for session recap.
+
+    Returns dict with keys: genres, transitions, mimic, rebel, facts.
+    Each value is a short Telegram HTML text for a separate message.
+    """
     if not settings.anthropic_api_key:
-        return ""
+        return {}
 
     client = _get_client()
     try:
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=600,
+            max_tokens=800,
             system=(
                 "Ты — TURDOM Assistant, ведущий музыкальных сессий группы друзей. "
-                "Напиши комментарий к рекапу сессии. Структура:\n\n"
-                "1. Каким треком начали, каким закончили — по паре слов о каждом. "
-                "Какая была атмосфера сессии в целом.\n"
-                "2. Если были резкие жанровые переходы (например от металкора к попу) — "
-                "подчеркни это с юмором.\n"
-                "3. Мимик сессии — человек который лучше всех попадает в общий вайб группы. "
-                "Подбери ему подходящее смешное звание в зависимости от атмосферы сессии "
-                "(например 'Мимик', 'Телепат', 'Вайбмейкер' и т.п.). Распиши коротко.\n"
-                "4. Бунтарь — человек чьи треки дропали чаще всего. Он идёт против системы. "
-                "Опиши с юмором. Потом напиши кто его 'Киллеры' — те кто голосовал против его треков. "
-                "Подай это смешно, типа 'больше всего ударов в спину нанесли...'.\n"
-                "5. Если в треках есть интересные совпадения (артисты из одной страны, "
-                "похожие названия, связи между треками из фактов) — отметь.\n\n"
-                "Пиши на русском, неформально, с эмоджи. Не повторяй числа и статистику — "
-                "они уже показаны выше. Просто комментарий от ведущего.\n"
+                "Напиши комментарий к рекапу сессии, разбитый на блоки. "
+                "Каждый блок — отдельное сообщение в Telegram.\n\n"
+                "Верни СТРОГО в формате:\n"
+                "[GENRES]\nКомментарий про жанровое разнообразие сессии — какие жанры доминировали, "
+                "что неожиданного было. 2-3 предложения.\n"
+                "[TRANSITIONS]\nКомментарий про переходы между треками — были ли резкие скачки "
+                "(от металкора к попу и т.п.). С юмором. 2-3 предложения. "
+                "Упомяни каким треком начали и каким закончили.\n"
+                "[MIMIC]\nМимик сессии — человек который лучше всех попадает в общий вайб. "
+                "Подбери ему смешное звание (Мимик/Телепат/Вайбмейкер/и т.п.). 2-3 предложения.\n"
+                "[REBEL]\nБунтарь — чьи треки дропали чаще всего. Идёт против системы. "
+                "С юмором. Потом киллеры — кто голосовал против. "
+                "Подай смешно ('больше всего ударов в спину нанесли...'). 2-3 предложения.\n"
+                "[FACTS]\nИнтересные совпадения: артисты из одной страны, похожие названия, "
+                "связи между треками из фактов. Если нет совпадений — придумай забавное наблюдение. "
+                "2-3 предложения.\n\n"
+                "Пиши на русском, неформально, с эмоджи. Не повторяй числа и статистику.\n"
                 + _HTML_FORMAT_INSTRUCTION
             ),
             messages=[
@@ -142,9 +148,27 @@ async def generate_session_recap(
                 },
             ],
         )
-        recap = response.content[0].text.strip()
-        log.info("Generated AI session recap")
-        return recap
+        raw = response.content[0].text.strip()
+        log.info("Generated AI session recap blocks")
+
+        # Parse blocks
+        blocks = {}
+        for key in ["GENRES", "TRANSITIONS", "MIMIC", "REBEL", "FACTS"]:
+            start = raw.find(f"[{key}]")
+            if start == -1:
+                continue
+            start += len(f"[{key}]")
+            # Find next block or end
+            next_start = len(raw)
+            for other in ["GENRES", "TRANSITIONS", "MIMIC", "REBEL", "FACTS"]:
+                if other == key:
+                    continue
+                pos = raw.find(f"[{other}]", start)
+                if pos != -1 and pos < next_start:
+                    next_start = pos
+            blocks[key.lower()] = raw[start:next_start].strip()
+
+        return blocks
     except Exception as e:
-        log.error(f"Failed to generate recap: {e}")
-        return ""
+        log.error(f"Failed to generate recap blocks: {e}")
+        return {}

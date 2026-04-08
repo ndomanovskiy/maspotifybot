@@ -357,12 +357,12 @@ class TestRecap:
         assert result["has_saved"] is True
         assert "Saved recap text here" in result["message"]
 
-    @patch("app.services.admin_commands.generate_session_recap")
+    @patch("app.services.admin_commands.generate_session_recap_blocks")
     def test_generates_new(self, mock_gen, admin_store, admin_pool):
         from app.services.admin_commands import cmd_recap
 
         async def fake_gen(*a, **kw):
-            return "Generated recap"
+            return {"genres": "Generated recap"}
         mock_gen.side_effect = fake_gen
 
         admin_store.add_playlist(number=91, spotify_id="sp_91", name="TURDOM#91")

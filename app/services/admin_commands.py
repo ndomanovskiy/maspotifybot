@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import asyncpg
 
-from app.services.ai import generate_session_recap
+from app.services.ai import generate_session_recap_blocks
 from app.services.genre_distributor import distribute_session_tracks
 from app.services.playlists import create_next_playlist
 from app.spotify.auth import get_spotify
@@ -368,11 +368,6 @@ async def _generate_and_save_recap(
     for name, s in sorted(user_stats.items(), key=lambda x: -x[1]["kept"]):
         lines.append(f"   {name} — {s['kept']} из {s['total']}")
 
-    if genre_counts:
-        lines.append(f"\n⚡ <b>Жанровый микс:</b>")
-        genre_str = " · ".join(f"{g} {c}" for g, c in sorted(genre_counts.items(), key=lambda x: -x[1]))
-        lines.append(f"   {genre_str}")
-
     stats_block = "\n".join(lines)
 
     # === AI COMMENTARY ===
@@ -389,17 +384,38 @@ async def _generate_and_save_recap(
     rebel_info = f"Бунтарь: {rebel} ({max_drops} дропов)" if rebel else "нет"
     killers_info = f"Киллеры: {', '.join(killers)}" if killers else "нет"
 
-    ai_comment = await generate_session_recap(
+    ai_blocks = await generate_session_recap_blocks(
         total, kept, dropped,
         tracks_for_ai, participant_names,
         mimic_info, rebel_info, killers_info,
     )
 
-    # === COMBINE ===
-    if ai_comment:
-        recap_text = f"{stats_block}\n\n{ai_comment}"
-    else:
-        recap_text = stats_block
+    # === BUILD MESSAGES ===
+    messages = [stats_block]
+
+    if ai_blocks.get("genres") or genre_counts:
+        genre_msg = "🎸 <b>Что по жанрам?</b>\n\n"
+        if ai_blocks.get("genres"):
+            genre_msg += ai_blocks["genres"]
+        if genre_counts:
+            genre_str = " · ".join(f"{g} {c}" for g, c in sorted(genre_counts.items(), key=lambda x: -x[1]))
+            genre_msg += f"\n\n📋 <b>Все жанры:</b> {genre_str}"
+        messages.append(genre_msg)
+
+    if ai_blocks.get("transitions"):
+        messages.append(f"🔀 <b>Что по переходам?</b>\n\n{ai_blocks['transitions']}")
+
+    if ai_blocks.get("mimic"):
+        messages.append(f"🎭 <b>Мимик сессии</b>\n\n{ai_blocks['mimic']}")
+
+    if ai_blocks.get("rebel"):
+        messages.append(f"🔥 <b>Бунтарь сессии</b>\n\n{ai_blocks['rebel']}")
+
+    if ai_blocks.get("facts"):
+        messages.append(f"💡 <b>Забавные факты</b>\n\n{ai_blocks['facts']}")
+
+    # Save combined for DB (joined with separator)
+    recap_text = "\n\n---\n\n".join(messages)
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -411,7 +427,7 @@ async def _generate_and_save_recap(
         pool, "recap_generate",
         turdom_number=turdom_number, session_id=session_id,
         triggered_by=triggered_by,
-        result={"length": len(recap_text)} if recap_text else {"error": "generation_failed"},
+        result={"blocks": len(messages)},
     )
 
     return recap_text
