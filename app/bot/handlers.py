@@ -717,20 +717,22 @@ async def cmd_secret(message: Message):
         await message.answer("⛔ Доступ только для участников TURDOM.")
         return
 
-    # Find latest upcoming/active session
+    # Find upcoming/active playlist and its session (or latest session as fallback)
     async with _pool.acquire() as conn:
-        session = await conn.fetchrow(
-            """SELECT s.id FROM sessions s
-               JOIN playlists p ON s.playlist_spotify_id = p.spotify_id
-               WHERE p.status IN ('active', 'upcoming') OR s.status = 'active'
-               ORDER BY s.id DESC LIMIT 1"""
+        upcoming_pl = await conn.fetchrow(
+            "SELECT id, spotify_id FROM playlists WHERE status IN ('active', 'upcoming') ORDER BY number DESC LIMIT 1"
         )
-        if not session:
-            # No active session — check upcoming playlist, create session placeholder later
-            # For now, just save to latest session
+        if upcoming_pl:
             session = await conn.fetchrow(
-                "SELECT id FROM sessions ORDER BY id DESC LIMIT 1"
+                "SELECT id FROM sessions WHERE playlist_spotify_id = $1 ORDER BY id DESC LIMIT 1",
+                upcoming_pl["spotify_id"],
             )
+            if not session:
+                # No session yet for upcoming playlist — use latest session for storing secret
+                session = await conn.fetchrow("SELECT id FROM sessions ORDER BY id DESC LIMIT 1")
+        else:
+            session = await conn.fetchrow("SELECT id FROM sessions ORDER BY id DESC LIMIT 1")
+            upcoming_pl = None
 
     if not session:
         await message.answer("Нет активной или предстоящей сессии.")
@@ -785,22 +787,17 @@ async def cmd_secret(message: Message):
 
     await message.answer(f"🥚 Секрет сохранён!\n🔒 <i>{secret}</i>\n\n⏳ Анализирую треки...", parse_mode="HTML")
 
-    # Get user's tracks from the upcoming playlist
-    async with _pool.acquire() as conn:
-        pl = await conn.fetchrow(
-            "SELECT p.id FROM playlists p JOIN sessions s ON s.playlist_spotify_id = p.spotify_id WHERE s.id = $1",
-            session_id,
-        )
-        user_tracks = []
-        if pl:
-            # Get user's spotify_id
+    # Get user's tracks from the upcoming/active playlist
+    user_tracks = []
+    if upcoming_pl:
+        async with _pool.acquire() as conn:
             spotify_id = await conn.fetchval(
                 "SELECT spotify_id FROM users WHERE telegram_id = $1", message.from_user.id
             )
             if spotify_id:
                 user_tracks = [dict(r) for r in await conn.fetch(
                     "SELECT title, artist FROM playlist_tracks WHERE playlist_id = $1 AND added_by_spotify_id = $2",
-                    pl["id"], spotify_id,
+                    upcoming_pl["id"], spotify_id,
                 )]
 
     if not user_tracks:
