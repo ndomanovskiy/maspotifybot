@@ -86,9 +86,9 @@ async def cmd_start(message: Message):
     if is_admin(message.from_user.id):
         msg += (
             "\n\n🔧 <b>Админ:</b>\n"
-            "/session — начать сессию\n"
-            "/end — завершить сессию\n"
-            "/kick — кикнуть участника\n"
+            "/session start — начать сессию\n"
+            "/session end — завершить сессию\n"
+            "/session kick — кикнуть участника\n"
             "/distribute — раскидать треки по жанрам\n"
             "/recap — рекап сессии\n"
             "/close_playlist — закрыть плейлист\n"
@@ -829,17 +829,21 @@ async def on_secret_clarification(message: Message):
     await message.answer(f"🥚 Секрет обновлён!\n🔒 <i>{updated_secret}</i>", parse_mode="HTML")
 
 
-@dp.message(Command("kick"))
-async def cmd_kick(message: Message):
-    if not is_admin(message.from_user.id):
-        return
+async def _handle_kick(message: Message):
+    """Handle kick logic for /session kick and /kick."""
+    # Extract username — could be "/kick @user" or "/session kick @user"
+    parts = message.text.split()
+    username = None
+    for p in parts:
+        if p.startswith("@"):
+            username = p.lstrip("@")
+            break
+    if not username and len(parts) >= 2:
+        username = parts[-1].lstrip("@")
 
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Укажи @username: /kick @username")
+    if not username or username in ("kick", "session"):
+        await message.answer("Укажи @username: /session kick @username")
         return
-
-    username = args[1].strip().lstrip("@")
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT telegram_id FROM users WHERE telegram_username = $1", username
@@ -866,6 +870,14 @@ async def cmd_kick(message: Message):
         await bot.send_message(tid, "👢 Тебя убрали из текущей сессии.")
     except Exception:
         pass
+
+
+@dp.message(Command("kick"))
+async def cmd_kick(message: Message):
+    """Legacy /kick — redirects to _handle_kick."""
+    if not is_admin(message.from_user.id):
+        return
+    await _handle_kick(message)
 
 
 async def _get_participant_names() -> str:
@@ -914,22 +926,50 @@ async def cmd_session(message: Message):
     global _active_session_id, _active_playlist_id, _played_track_ids
 
     if not is_admin(message.from_user.id):
-        await message.answer("Только админ может запускать сессию.")
-        return
-
-    if _active_session_id is not None:
-        await message.answer("Сессия уже идёт! Сначала /end")
+        await message.answer("Только админ.")
         return
 
     args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Укажи ссылку на плейлист: /session &lt;url&gt;")
+    subcommand = args[1].strip().lower() if len(args) > 1 else ""
+
+    # /session end
+    if subcommand == "end":
+        if _active_session_id is None:
+            await message.answer("Нет активной сессии.")
+            return
+        await _end_session()
         return
 
-    playlist_input = args[1].strip()
-    playlist_id = _extract_playlist_id(playlist_input)
-    if not playlist_id:
-        await message.answer("Не могу распарсить ID плейлиста. Скинь ссылку формата spotify.com/playlist/...")
+    # /session kick @user
+    if subcommand.startswith("kick"):
+        await _handle_kick(message)
+        return
+
+    # /session start (or just /session)
+    if subcommand and subcommand != "start":
+        await message.answer("Команды: /session start, /session end, /session kick @user")
+        return
+
+    if _active_session_id is not None:
+        await message.answer("🚫 Сессия уже идёт! Сначала /session end")
+        return
+
+    # Find upcoming playlist automatically
+    async with _pool.acquire() as conn:
+        upcoming = await conn.fetchrow(
+            "SELECT spotify_id, name FROM playlists WHERE status = 'upcoming' ORDER BY number DESC LIMIT 1"
+        )
+
+    if not upcoming:
+        await message.answer("Нет upcoming плейлиста. Сначала /create_next")
+        return
+
+    playlist_id = upcoming["spotify_id"]
+    playlist_name = upcoming["name"]
+
+    # Check if a session already exists for this playlist
+    if await check_duplicate_session(_pool, playlist_id):
+        await message.answer("🚫 Для этого плейлиста уже есть сессия!", parse_mode="HTML")
         return
 
     # Auto-join admin
@@ -945,22 +985,6 @@ async def cmd_session(message: Message):
                 """,
                 tid, message.from_user.full_name, message.from_user.username or "", True,
             )
-
-    # Get playlist name from Spotify
-    try:
-        sp = await get_spotify()
-        pl_info = await sp.playlist(playlist_id)
-        playlist_name = pl_info.name
-    except Exception:
-        playlist_name = playlist_input[:100]
-
-    # Check if a session already exists for this playlist
-    if await check_duplicate_session(_pool, playlist_id):
-        await message.answer(
-            f"🚫 Для этого плейлиста уже есть сессия! Нельзя создать вторую.",
-            parse_mode="HTML",
-        )
-        return
 
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -1107,14 +1131,13 @@ async def on_start_listening(callback: CallbackQuery):
 
 @dp.message(Command("end"))
 async def cmd_end(message: Message):
+    """Legacy /end — redirects to /session end."""
     if not is_admin(message.from_user.id):
-        await message.answer("Только админ может завершить сессию.")
+        await message.answer("Только админ.")
         return
-
     if _active_session_id is None:
         await message.answer("Нет активной сессии.")
         return
-
     await _end_session()
 
 
