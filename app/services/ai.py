@@ -181,11 +181,20 @@ async def generate_session_recap_blocks(
         ),
     }
 
+    # Run all 5 blocks in parallel
+    import asyncio
+    keys = list(block_prompts.keys())
+    results = await asyncio.gather(
+        *[_generate_recap_block(user_context, block_prompts[k]) for k in keys],
+        return_exceptions=True,
+    )
+
     blocks = {}
-    for key, prompt in block_prompts.items():
-        text = await _generate_recap_block(user_context, prompt)
-        if text:
-            blocks[key] = text
-        log.info(f"Generated recap block: {key}")
+    for key, result in zip(keys, results):
+        if isinstance(result, Exception):
+            log.error(f"Recap block {key} failed: {result}")
+        elif result:
+            blocks[key] = result
+    log.info(f"Generated {len(blocks)} recap blocks in parallel")
 
     return blocks
