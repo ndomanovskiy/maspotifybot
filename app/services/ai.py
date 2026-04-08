@@ -60,6 +60,12 @@ async def generate_track_facts(title: str, artist: str, album: str) -> str:
             ],
         )
         facts = response.content[0].text.strip()
+
+        # Validate: check if response was cut off (stop_reason != 'end_turn')
+        if response.stop_reason != "end_turn":
+            log.warning(f"Facts for '{title}' cut off (stop_reason={response.stop_reason}), discarding")
+            return ""
+
         log.info(f"Generated facts for '{title}' by {artist}")
         return facts
     except Exception as e:
