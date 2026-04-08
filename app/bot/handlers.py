@@ -16,6 +16,7 @@ from app.services.duplicate_watcher import DuplicateWatcher
 from app.services.ai import generate_track_facts, generate_session_recap, generate_pre_recap_teaser
 from app.services.genre_distributor import distribute_session_tracks
 from app.services.genre_resolver import backfill_genres
+from app.services.track_formatter import format_track, format_track_plain
 from app.services.admin_commands import (
     cmd_distribute, cmd_distribute_force, cmd_recap, cmd_recap_regenerate,
     cmd_close_playlist, cmd_create_next, cmd_dbinfo, log_action, check_duplicate_session,
@@ -220,7 +221,8 @@ async def cmd_check(message: Message):
         lines = []
         for d in duplicates:
             match_type = "🎯 точное совпадение" if d["match"] == "exact" else "🔗 тот же трек (другой альбом)"
-            lines.append(f"• <b>{d['title']}</b> — {d['artist']}\n  {match_type} в {d['playlist']}\n  {d['url']}")
+            track_display = format_track(d["title"], d["artist"])
+            lines.append(f"• {track_display}\n  {match_type} в {d['playlist']}\n  {d['url']}")
         await message.answer(
             f"⚠️ <b>Дубликат найден!</b>\n\n" + "\n\n".join(lines),
             parse_mode="HTML",
@@ -505,7 +507,7 @@ async def _show_session_details(message: Message, session_num: int):
             return
 
         tracks = await conn.fetch("""
-            SELECT st.title, st.artist, st.vote_result,
+            SELECT st.spotify_track_id, st.title, st.artist, st.vote_result,
                    COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, '?') as added_by
             FROM session_tracks st
             LEFT JOIN users u ON st.added_by_spotify_id = u.spotify_id
@@ -524,7 +526,8 @@ async def _show_session_details(message: Message, session_num: int):
 
     for t in tracks:
         icon = "✅" if t["vote_result"] == "keep" else "❌" if t["vote_result"] == "drop" else "⏳"
-        lines.append(f"{icon} {t['title']} — {t['artist']} ({t['added_by']})")
+        track_display = format_track(t["title"], t["artist"], t["spotify_track_id"])
+        lines.append(f"{icon} {track_display} ({t['added_by']})")
 
     kept = sum(1 for t in tracks if t["vote_result"] == "keep")
     dropped = sum(1 for t in tracks if t["vote_result"] == "drop")
@@ -1167,11 +1170,6 @@ async def _on_track_change(info: TrackInfo):
             if row:
                 added_by_name = f"@{row['telegram_username']}" if row["telegram_username"] else row["telegram_name"]
 
-    # Build links
-    track_url = f"https://open.spotify.com/track/{info.track_id}"
-    artist_name = info.artist.split(",")[0].strip()  # first artist for search link
-    artist_search_url = f"https://open.spotify.com/search/{artist_name.replace(' ', '%20')}"
-
     if added_by_name:
         added_by_text = f"\n👤 {added_by_name}"
     elif info.added_by:
@@ -1201,20 +1199,14 @@ async def _on_track_change(info: TrackInfo):
 
     facts_text = f"\n\n💡 {facts}" if facts else ""
 
-    # Truncate to max 3 artists
-    artist_parts = [a.strip() for a in info.artist.split(",")]
-    if len(artist_parts) > 3:
-        display_artist = ", ".join(artist_parts[:3]) + "…"
-    else:
-        display_artist = info.artist
+    track_display = format_track(info.title, info.artist, info.track_id)
 
     # Reserve space for vote result (~50 chars) in caption
     VOTE_RESULT_RESERVE = 50
     MAX_CAPTION = 1024 - VOTE_RESULT_RESERVE
 
     text = (
-        f"🎵 <a href=\"{track_url}\"><b>{info.title}</b></a>\n"
-        f"🎤 <a href=\"{artist_search_url}\">{display_artist}</a>\n"
+        f"🎵 {track_display}\n"
         f"💿 {info.album}"
         f"{added_by_text}{facts_text}"
     )
@@ -1227,8 +1219,7 @@ async def _on_track_change(info: TrackInfo):
         else:
             facts_text = ""
         text = (
-            f"🎵 <a href=\"{track_url}\"><b>{info.title}</b></a>\n"
-            f"🎤 <a href=\"{artist_search_url}\">{display_artist}</a>\n"
+            f"🎵 {track_display}\n"
             f"💿 {info.album}"
             f"{added_by_text}{facts_text}"
         )
@@ -1628,21 +1619,12 @@ async def cmd_preview(message: Message):
             track = results[0].items[0]
 
         # Build card
-        track_url = f"https://open.spotify.com/track/{track.id}"
-        artist_parts = [a.name for a in track.artists]
-        first_artist = artist_parts[0]
-        artist_search_url = f"https://open.spotify.com/search/{first_artist.replace(' ', '%20')}"
-
-        if len(artist_parts) > 3:
-            display_artist = ", ".join(artist_parts[:3]) + "…"
-        else:
-            display_artist = ", ".join(artist_parts)
-
+        artist_str = ", ".join(a.name for a in track.artists)
+        track_display = format_track(track.name, artist_str, track.id)
         cover_url = track.album.images[0].url if track.album.images else None
 
         text = (
-            f"🎵 <a href=\"{track_url}\"><b>{track.name}</b></a>\n"
-            f"🎤 <a href=\"{artist_search_url}\">{display_artist}</a>\n"
+            f"🎵 {track_display}\n"
             f"💿 {track.album.name}\n"
             f"👤 preview mode\n\n"
             f"💡 Это превью карточки. В сессии будут кнопки Keep/Drop и AI-факты."
@@ -1925,17 +1907,14 @@ async def setup_bot(pool: asyncpg.Pool):
             dup_links.append(f"  {match_type} — <a href=\"{d['url']}\">{d['playlist']}</a>")
         dup_text = "\n".join(dup_links)
 
-        track_link = f"https://open.spotify.com/track/{track_id}" if track_id else ""
-        track_display = f"<a href=\"{track_link}\">{track_title}</a>" if track_id else track_title
-        artist_search = f"https://open.spotify.com/search/{artist.replace(' ', '%20')}"
-        artist_display = f"<a href=\"{artist_search}\">{artist}</a>"
+        track_fmt = format_track(track_title, artist, track_id)
 
         # Get playlist URL for where it was removed from
         async with pool.acquire() as conn:
             pl_row = await conn.fetchrow("SELECT url FROM playlists WHERE name = $1", playlist_name)
         removed_from = f"<a href=\"{pl_row['url']}\">{playlist_name}</a>" if pl_row and pl_row["url"] else playlist_name
 
-        msg = f"🗑 <b>Дубликат удалён!</b>\n\n🎵 {track_display} — {artist_display}\nУдалён из: {removed_from}\n\nУже был:\n{dup_text}"
+        msg = f"🗑 <b>Дубликат удалён!</b>\n\n🎵 {track_fmt}\nУдалён из: {removed_from}\n\nУже был:\n{dup_text}"
 
         if telegram_id:
             try:
