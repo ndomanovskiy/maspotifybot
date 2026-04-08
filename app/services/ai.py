@@ -30,7 +30,7 @@ async def generate_track_facts(title: str, artist: str, album: str) -> str:
     try:
         response = await client.messages.create(
             model=_RECAP_MODEL,
-            max_tokens=400,
+            max_tokens=700,
             system=(
                 "Ты — TURDOM Assistant, музыкальный эксперт. "
                 "Напиши ровно 5 самых интересных тезисных фактов о треке. "
