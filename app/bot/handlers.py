@@ -5,7 +5,9 @@ import re
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LinkPreviewOptions
+
+_NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 from app.config import settings
 from app.spotify.auth import start_oauth, exchange_code, run_oauth_callback_server, load_token_from_db, save_token_to_db, get_spotify
@@ -225,7 +227,7 @@ async def cmd_check(message: Message):
             lines.append(f"• {track_display}\n  {match_type} в {d['playlist']}\n  {d['url']}")
         await message.answer(
             f"⚠️ <b>Дубликат найден!</b>\n\n" + "\n\n".join(lines),
-            parse_mode="HTML",
+            parse_mode="HTML", link_preview_options=_NO_PREVIEW,
         )
     else:
         await message.answer("✅ Трек не найден в базе — можно добавлять!")
@@ -390,7 +392,7 @@ async def cmd_mystats(message: Message):
         f"📊 <b>Статистика {display}</b>\n\n"
         f"🎵 Треков добавлено: <b>{total}</b>\n"
         f"📅 Сессий: <b>{sessions_count}</b>\n"
-        f"✅ Kept: <b>{votes_kept}</b> · ❌ Dropped: <b>{votes_dropped}</b>\n\n"
+        f"✅ Осталось: <b>{votes_kept}</b> · ❌ Удалено: <b>{votes_dropped}</b>\n\n"
         f"<b>Топ жанры:</b>\n"
     )
     for g_name, g_count in top5:
@@ -463,7 +465,7 @@ async def _show_history_page(message_or_callback, offset: int):
         lines.append(
             f"<a href=\"{deeplink}\"><b>{name}</b></a>\n"
             f"📆 {date} · 🎵 {tracks} треков · 👥 {parts}\n"
-            f"✅ {kept} kept · ❌ {dropped} dropped\n"
+            f"✅ {kept} осталось · ❌ {dropped} удалено\n"
         )
 
     text = "\n".join(lines)
@@ -527,13 +529,13 @@ async def _show_session_details(message: Message, session_num: int):
     for t in tracks:
         icon = "✅" if t["vote_result"] == "keep" else "❌" if t["vote_result"] == "drop" else "⏳"
         track_display = format_track(t["title"], t["artist"], t["spotify_track_id"])
-        lines.append(f"{icon} {track_display} ({t['added_by']})")
+        lines.append(f"{icon} {track_display} · 👤 {t['added_by']}")
 
     kept = sum(1 for t in tracks if t["vote_result"] == "keep")
     dropped = sum(1 for t in tracks if t["vote_result"] == "drop")
-    lines.append(f"\n🎵 {len(tracks)} треков · ✅ {kept} kept · ❌ {dropped} dropped")
+    lines.append(f"\n🎵 {len(tracks)} треков · ✅ {kept} осталось · ❌ {dropped} удалено")
 
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.answer("\n".join(lines), parse_mode="HTML", link_preview_options=_NO_PREVIEW)
 
 
 @dp.message(Command("scan"))
@@ -1752,7 +1754,7 @@ async def _send_recap_carousel(chat_id: int, recap_text: str, turdom_num: int):
     if not blocks:
         return
     kb = _recap_keyboard(turdom_num, 0, len(blocks))
-    await bot.send_message(chat_id, blocks[0], parse_mode="HTML", reply_markup=kb)
+    await bot.send_message(chat_id, blocks[0], parse_mode="HTML", reply_markup=kb, link_preview_options=_NO_PREVIEW)
 
 
 @dp.message(Command("recap"))
@@ -1803,7 +1805,7 @@ async def on_recap_page(callback: CallbackQuery):
         return
 
     kb = _recap_keyboard(turdom_num, page, len(blocks))
-    await callback.message.edit_text(blocks[page], parse_mode="HTML", reply_markup=kb)
+    await callback.message.edit_text(blocks[page], parse_mode="HTML", reply_markup=kb, link_preview_options=_NO_PREVIEW)
     await callback.answer()
 
 
@@ -1978,13 +1980,13 @@ async def setup_bot(pool: asyncpg.Pool):
 
         if telegram_id:
             try:
-                await bot.send_message(telegram_id, msg, parse_mode="HTML")
+                await bot.send_message(telegram_id, msg, parse_mode="HTML", link_preview_options=_NO_PREVIEW)
             except Exception:
                 pass
         # Always notify admin too
         if telegram_id != settings.telegram_admin_id:
             try:
-                await bot.send_message(settings.telegram_admin_id, msg, parse_mode="HTML")
+                await bot.send_message(settings.telegram_admin_id, msg, parse_mode="HTML", link_preview_options=_NO_PREVIEW)
             except Exception:
                 pass
 
