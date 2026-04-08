@@ -1163,48 +1163,24 @@ async def _end_session():
         except Exception:
             pass
 
-    recap = (
-        f"📊 <b>Сессия завершена!</b>\n\n"
-        f"Всего треков: {stats['total']}\n"
-        f"✅ Оставлено: {stats['kept']}\n"
-        f"❌ Удалено: {stats['dropped']}"
-    )
-
-    # AI recap
+    # Generate full recap via admin_commands (same as /recap)
+    from app.services.admin_commands import _generate_and_save_recap
+    turdom_number = None
     async with _pool.acquire() as conn:
-        tracks_data = [dict(r) for r in await conn.fetch(
-            """
-            SELECT st.title, st.artist, st.vote_result, st.added_by_spotify_id,
-                   COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, st.added_by_spotify_id, '?') as added_by
-            FROM session_tracks st
-            LEFT JOIN users u ON st.added_by_spotify_id = u.spotify_id
-            WHERE st.session_id = $1
-            """,
+        turdom_number = await conn.fetchval(
+            "SELECT p.number FROM playlists p JOIN sessions s ON s.playlist_spotify_id = p.spotify_id WHERE s.id = $1",
             session_id_to_end,
-        )]
-        participant_names = [r["telegram_name"] for r in await conn.fetch(
-            "SELECT telegram_name FROM users WHERE telegram_id = ANY($1::bigint[])",
-            _participants,
-        )]
+        )
 
-    ai_recap = await generate_session_recap(
-        stats['total'], stats['kept'], stats['dropped'],
-        tracks_data, participant_names,
-    )
-    if ai_recap:
-        recap += f"\n\n🤖 <b>AI Recap:</b>\n{ai_recap}"
-        # Save recap to DB
-        async with _pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE sessions SET recap_text = $1 WHERE id = $2",
-                ai_recap, session_id_to_end,
-            )
+    recap_text = await _generate_and_save_recap(_pool, session_id_to_end, turdom_number or 0, None)
 
-    for tid in _participants:
-        try:
-            await bot.send_message(tid, recap, parse_mode="HTML")
-        except Exception:
-            pass
+    # Send recap carousel to all participants
+    if recap_text:
+        for tid in _participants:
+            try:
+                await _send_recap_carousel(tid, recap_text, turdom_number or 0)
+            except Exception:
+                pass
 
     # Distribute kept tracks to genre playlists
     try:
@@ -1378,7 +1354,10 @@ async def _on_track_change(info: TrackInfo):
     for tid in _participants:
         try:
             if is_admin(tid):
-                rows = [vote_row, [InlineKeyboardButton(text="⏭ Skip", callback_data=f"skip:{session_track_id}")]]
+                rows = [vote_row, [
+                    InlineKeyboardButton(text="⏭ Skip", callback_data=f"skip:{session_track_id}"),
+                    InlineKeyboardButton(text="🔄 Факты", callback_data=f"regen_facts:{session_track_id}"),
+                ]]
             else:
                 rows = [vote_row]
             kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1416,7 +1395,10 @@ async def _update_vote_buttons(session_track_id: int):
                 InlineKeyboardButton(text=drop_text, callback_data=f"vote:drop:{session_track_id}"),
             ]
             if is_admin(chat_id):
-                rows = [vote_row, [InlineKeyboardButton(text="⏭ Skip", callback_data=f"skip:{session_track_id}")]]
+                rows = [vote_row, [
+                    InlineKeyboardButton(text="⏭ Skip", callback_data=f"skip:{session_track_id}"),
+                    InlineKeyboardButton(text="🔄 Факты", callback_data=f"regen_facts:{session_track_id}"),
+                ]]
             else:
                 rows = [vote_row]
             await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -1431,16 +1413,6 @@ async def _finalize_track_card(session_track_id: int, result_text: str):
 
     for chat_id, message_id in _track_messages[session_track_id]:
         try:
-            # Try to append result to caption (photo) or text (message)
-            try:
-                msg = await bot.edit_message_caption(
-                    chat_id=chat_id, message_id=message_id,
-                    caption=None,  # will fail, we catch and just remove buttons
-                    reply_markup=None,
-                )
-            except Exception:
-                pass
-            # Remove buttons
             await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
         except Exception:
             pass
@@ -1573,6 +1545,58 @@ async def on_skip(callback: CallbackQuery):
 
     await callback.answer("⏭ Скипаю...")
     await skip_to_next()
+
+
+@dp.callback_query(F.data.startswith("regen_facts:"))
+async def on_regen_facts(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Только ведущий!")
+        return
+
+    session_track_id = int(callback.data.split(":")[1])
+    await callback.answer("🔄 Генерирую новые факты...")
+
+    # Get track info
+    async with _pool.acquire() as conn:
+        track = await conn.fetchrow(
+            "SELECT spotify_track_id, title, artist FROM session_tracks WHERE id = $1",
+            session_track_id,
+        )
+
+    if not track:
+        return
+
+    # Clear old facts and regenerate
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE playlist_tracks SET ai_facts = NULL WHERE spotify_track_id = $1",
+            track["spotify_track_id"],
+        )
+
+    facts = await generate_track_facts(track["title"], track["artist"], "")
+
+    if facts:
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE playlist_tracks SET ai_facts = $1 WHERE spotify_track_id = $2",
+                facts, track["spotify_track_id"],
+            )
+
+        # Update caption for all participants
+        if session_track_id in _track_messages:
+            track_display = format_track(track["title"], track["artist"], track["spotify_track_id"])
+            for chat_id, message_id in _track_messages[session_track_id]:
+                try:
+                    # We can only edit caption, not rebuild full card
+                    await bot.send_message(
+                        chat_id,
+                        f"💡 <b>Обновлённые факты:</b>\n\n{facts}",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+    else:
+        await callback.message.answer("❌ Не удалось сгенерировать факты.", parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("approve:"))
