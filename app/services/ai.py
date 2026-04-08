@@ -50,24 +50,13 @@ async def _call_llm(system: str, user_content: str, max_tokens: int) -> tuple[st
             return response.content[0].text.strip(), response.stop_reason
         except anthropic.APIStatusError as e:
             if e.status_code == 529:
-                log.warning("Anthropic overloaded, falling back to OpenAI GPT-4o")
+                log.warning(f"Anthropic overloaded (529), skipping")
+                # TODO: uncomment to enable GPT-4o fallback
+                # if settings.openai_api_key:
+                #     return await _call_openai_fallback(system, user_content, max_tokens)
+                return "", "error"
             else:
                 raise
-
-    # Fallback to OpenAI
-    if settings.openai_api_key:
-        client = _get_openai()
-        response = await client.chat.completions.create(
-            model=_OPENAI_FALLBACK_MODEL,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ],
-        )
-        finish = response.choices[0].finish_reason
-        stop_reason = "end_turn" if finish == "stop" else finish
-        return response.choices[0].message.content.strip(), stop_reason
 
     return "", "error"
 
@@ -104,6 +93,12 @@ async def generate_track_facts(title: str, artist: str, album: str) -> str:
 
         if stop_reason != "end_turn":
             log.warning(f"Facts for '{title}' cut off (stop_reason={stop_reason}), discarding")
+            return ""
+
+        # Discard cop-out responses where model doesn't know the track
+        _copout_markers = ["помогу", "дайте знать", "поделитесь", "не удалось найти", "недостаточно информации", "не нашёл", "попытаться помочь", "к сожалению, информац"]
+        if any(m in facts.lower() for m in _copout_markers):
+            log.warning(f"Facts for '{title}' contain cop-out response, discarding")
             return ""
 
         log.info(f"Generated facts for '{title}' by {artist}")
