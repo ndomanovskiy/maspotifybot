@@ -95,10 +95,17 @@ async def generate_track_facts(title: str, artist: str, album: str) -> str:
             log.warning(f"Facts for '{title}' cut off (stop_reason={stop_reason}), discarding")
             return ""
 
-        # Discard cop-out responses where model doesn't know the track
-        _copout_markers = ["помогу", "дайте знать", "поделитесь", "не удалось найти", "недостаточно информации", "не нашёл", "попытаться помочь", "к сожалению, информац"]
-        if any(m in facts.lower() for m in _copout_markers):
-            log.warning(f"Facts for '{title}' contain cop-out response, discarding")
+        # Filter out cop-out lines where model admits it doesn't know
+        _copout_markers = ["помогу", "дайте знать", "поделитесь", "не удалось найти",
+                           "недостаточно информации", "не нашёл", "попытаться помочь",
+                           "к сожалению", "публично не задокументирована",
+                           "информация ограничена", "данных недостаточно"]
+        lines = facts.split("\n")
+        clean_lines = [l for l in lines if not any(m in l.lower() for m in _copout_markers)]
+        facts = "\n".join(clean_lines).strip()
+
+        if not facts:
+            log.warning(f"Facts for '{title}' all cop-out, discarding")
             return ""
 
         log.info(f"Generated facts for '{title}' by {artist}")
