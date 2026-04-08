@@ -92,7 +92,7 @@ async def generate_pre_recap_teaser(
         return f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем прямо сейчас! 🥁"
 
 
-_RECAP_MODEL = "claude-sonnet-4-6-20250514"
+_RECAP_MODEL = "claude-sonnet-4-6"
 
 _RECAP_BASE_SYSTEM = (
     "Ты — TURDOM Assistant, ведущий музыкальных сессий группы друзей. "
