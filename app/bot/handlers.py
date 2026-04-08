@@ -1742,8 +1742,7 @@ def _recap_keyboard(turdom_num: int, page: int, total: int) -> InlineKeyboardMar
     if page < total - 1:
         buttons.append(InlineKeyboardButton(text="→", callback_data=f"recap_page:{turdom_num}:{page + 1}"))
     rows = [buttons]
-    if page == total - 1:
-        rows.append([InlineKeyboardButton(text="🔄 Перегенерировать", callback_data=f"rerecap:{turdom_num}")])
+    rows.append([InlineKeyboardButton(text="🔄 Перегенерировать", callback_data=f"rerecap:{turdom_num}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
