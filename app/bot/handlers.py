@@ -80,7 +80,8 @@ async def cmd_start(message: Message):
         "/mystats — твоя персональная статистика\n"
         "/history — история сессий\n"
         "/check — проверить трек на дубликат\n"
-        "/secret — оставить пасхалку в плейлисте"
+        "/secret — оставить пасхалку в плейлисте\n"
+        "/genres — жанровые плейлисты TURDOM"
     )
 
     if is_admin(message.from_user.id):
@@ -198,6 +199,37 @@ async def cmd_setnextlink(message: Message):
         await message.answer(f"✅ Invite-ссылка сохранена для <b>{updated}</b>", parse_mode="HTML")
     else:
         await message.answer("❌ Нет upcoming плейлиста в базе.")
+
+
+@dp.message(Command("genres"))
+async def cmd_genres(message: Message):
+    if not await is_registered(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников TURDOM.")
+        return
+
+    from app.services.genre_distributor import _genre_playlist_ids, load_genre_playlist_ids
+
+    if not _genre_playlist_ids:
+        await load_genre_playlist_ids(_pool)
+
+    if not _genre_playlist_ids:
+        await message.answer("Жанровые плейлисты не найдены.")
+        return
+
+    genre_emojis = {
+        "Electronic": "⚡", "Pop": "🎹", "Metal": "🤘", "Rock": "🎸",
+        "Hip-Hop": "🎤", "Indie": "🎶", "DnB": "🥁", "R&B": "💜",
+        "Chill": "🌊", "Soundtrack": "🎬", "Phonk": "👻",
+    }
+
+    lines = ["🎸 <b>Жанровые плейлисты TURDOM</b>\n"]
+    for name, spotify_id in sorted(_genre_playlist_ids.items()):
+        short = name.replace("TURDOM ", "")
+        emoji = genre_emojis.get(short, "🎵")
+        url = f"https://open.spotify.com/playlist/{spotify_id}"
+        lines.append(f"{emoji} <a href=\"{url}\">{name}</a>")
+
+    await message.answer("\n".join(lines), parse_mode="HTML", link_preview_options=_NO_PREVIEW)
 
 
 @dp.message(Command("check"))
