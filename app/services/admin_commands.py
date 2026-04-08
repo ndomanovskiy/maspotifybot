@@ -362,7 +362,14 @@ async def _generate_and_save_recap(
 
     # === BUILD STATS BLOCK ===
     lines = [f"📊 <b>TURDOM#{turdom_number} — Рекап</b>\n"]
-    lines.append(f"🎵 {kept} остался{'ось' if kept != 1 else ''}, {dropped} удалили из {total}\n")
+    def _plural_tracks(n: int) -> str:
+        if n % 10 == 1 and n % 100 != 11:
+            return f"{n} трек"
+        elif n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+            return f"{n} трека"
+        return f"{n} треков"
+
+    lines.append(f"🎵 {_plural_tracks(kept)} осталось, {dropped} удалили из {total}\n")
 
     lines.append("👤 <b>Статистика:</b>")
     for name, s in sorted(user_stats.items(), key=lambda x: -x[1]["kept"]):
