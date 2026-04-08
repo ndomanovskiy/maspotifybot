@@ -15,7 +15,7 @@ from app.spotify.monitor import SpotifyMonitor, TrackInfo
 from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next, create_session_track
 from app.services.playlists import import_playlist, import_all_turdom, check_duplicate, get_track_isrc, get_next_playlist, create_next_playlist, reschedule_playlist
 from app.services.duplicate_watcher import DuplicateWatcher
-from app.services.ai import generate_track_facts, generate_pre_recap_teaser
+from app.services.ai import generate_track_facts, generate_pre_recap_teaser, analyze_easter_egg
 from app.services.genre_distributor import distribute_session_tracks
 from app.services.genre_resolver import backfill_genres
 from app.services.track_formatter import format_track, format_track_plain, format_album
@@ -41,6 +41,7 @@ _played_track_ids: set[str] = set()  # spotify track IDs already played this ses
 _cached_pre_recap: str | None = None
 _skip_in_progress: set[int] = set()  # session_track_ids currently being skipped (race condition guard)
 _session_message: tuple[int, int] | None = None  # (chat_id, message_id) of session creation message
+_waiting_secret_clarification: dict[int, dict] = {}  # telegram_id -> {session_id, secret}
 
 
 def is_admin(telegram_id: int) -> bool:
@@ -763,25 +764,79 @@ async def cmd_secret(message: Message):
         return
 
     secret = args[1].strip()
+    session_id = session["id"]
 
+    # Save secret
     async with _pool.acquire() as conn:
-        # Upsert: update if participant exists, insert if not
         exists = await conn.fetchval(
             "SELECT 1 FROM session_participants WHERE session_id = $1 AND telegram_id = $2",
-            session["id"], message.from_user.id,
+            session_id, message.from_user.id,
         )
         if exists:
             await conn.execute(
                 "UPDATE session_participants SET secret_note = $1 WHERE session_id = $2 AND telegram_id = $3",
-                secret, session["id"], message.from_user.id,
+                secret, session_id, message.from_user.id,
             )
         else:
             await conn.execute(
                 "INSERT INTO session_participants (session_id, telegram_id, secret_note) VALUES ($1, $2, $3)",
-                session["id"], message.from_user.id, secret,
+                session_id, message.from_user.id, secret,
             )
 
-    await message.answer(f"🥚 Секрет сохранён! Раскроем в рекапе после сессии.\n\n🔒 <i>{secret}</i>", parse_mode="HTML")
+    await message.answer(f"🥚 Секрет сохранён!\n🔒 <i>{secret}</i>\n\n⏳ Анализирую треки...", parse_mode="HTML")
+
+    # Get user's tracks from the upcoming playlist
+    async with _pool.acquire() as conn:
+        pl = await conn.fetchrow(
+            "SELECT p.id FROM playlists p JOIN sessions s ON s.playlist_spotify_id = p.spotify_id WHERE s.id = $1",
+            session_id,
+        )
+        user_tracks = []
+        if pl:
+            # Get user's spotify_id
+            spotify_id = await conn.fetchval(
+                "SELECT spotify_id FROM users WHERE telegram_id = $1", message.from_user.id
+            )
+            if spotify_id:
+                user_tracks = [dict(r) for r in await conn.fetch(
+                    "SELECT title, artist FROM playlist_tracks WHERE playlist_id = $1 AND added_by_spotify_id = $2",
+                    pl["id"], spotify_id,
+                )]
+
+    if not user_tracks:
+        await message.answer("Не нашёл твоих треков в плейлисте — анализ будет в рекапе.", parse_mode="HTML")
+        return
+
+    # AI analyzes
+    analysis = await analyze_easter_egg(secret, user_tracks)
+    if analysis:
+        _waiting_secret_clarification[message.from_user.id] = {
+            "session_id": session_id,
+            "secret": secret,
+        }
+        await message.answer(
+            f"🔍 <b>Анализ пасхалки:</b>\n\n{analysis}\n\n"
+            f"<i>Можешь уточнить или дополнить секрет — просто напиши текстом. "
+            f"Или отправь /secret с новым описанием.</i>",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer("Анализ не удался, но секрет сохранён — раскроем в рекапе!", parse_mode="HTML")
+
+
+@dp.message(lambda m: m.from_user.id in _waiting_secret_clarification and not m.text.startswith("/"))
+async def on_secret_clarification(message: Message):
+    """Handle user's clarification for easter egg."""
+    info = _waiting_secret_clarification.pop(message.from_user.id)
+    updated_secret = f"{info['secret']} | Уточнение: {message.text.strip()}"
+
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE session_participants SET secret_note = $1 WHERE session_id = $2 AND telegram_id = $3",
+            updated_secret, info["session_id"], message.from_user.id,
+        )
+
+    await message.answer(f"🥚 Секрет обновлён!\n🔒 <i>{updated_secret}</i>", parse_mode="HTML")
 
 
 @dp.message(Command("kick"))

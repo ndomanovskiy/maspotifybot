@@ -117,6 +117,33 @@ async def generate_track_facts(title: str, artist: str, album: str) -> str:
         return ""
 
 
+async def analyze_easter_egg(secret: str, tracks: list[dict]) -> str:
+    """Analyze user's easter egg against their tracks. Returns AI response."""
+    tracks_list = "\n".join(f"• {t['title']} — {t['artist']}" for t in tracks)
+
+    system = (
+        "Ты — TURDOM Assistant. Пользователь оставил пасхалку (секрет) про свои треки в плейлисте. "
+        "Попробуй сопоставить пасхалку с треками.\n\n"
+        "Если понял какие треки связаны с пасхалкой — перечисли их и объясни связь.\n"
+        "Если не уверен или понял только частично — спроси у пользователя уточнение: "
+        "'это ты имел в виду?' или 'а какие именно треки?'\n"
+        "Если совсем не понял — честно скажи и попроси подсказку.\n\n"
+        "Пиши коротко, 3-5 предложений. На русском, неформально. "
+        + _HTML_FORMAT_INSTRUCTION
+    )
+
+    try:
+        text, _ = await _call_llm(
+            system,
+            f"Пасхалка: {secret}\n\nТреки пользователя:\n{tracks_list}",
+            400,
+        )
+        return text
+    except Exception as e:
+        log.error(f"Failed to analyze easter egg: {e}")
+        return ""
+
+
 async def generate_pre_recap_teaser(
     total_tracks: int,
     participants: list[str],
