@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     # AI
     anthropic_api_key: str = ""
+    openai_api_key: str = ""
 
     # Voting
     vote_drop_threshold: int = 2

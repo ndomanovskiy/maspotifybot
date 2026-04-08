@@ -1,69 +1,109 @@
 import logging
 
 import anthropic
+from openai import AsyncOpenAI
 
 from app.config import settings
 
 log = logging.getLogger(__name__)
 
-_client: anthropic.AsyncAnthropic | None = None
+_anthropic_client: anthropic.AsyncAnthropic | None = None
+_openai_client: AsyncOpenAI | None = None
 
 _HTML_FORMAT_INSTRUCTION = (
     "Форматируй текст в Telegram HTML: <b>жирный</b>, <i>курсив</i>, <code>код</code>. "
     "НЕ используй Markdown (**, #, _, `). Только HTML теги."
 )
 
+_OPENAI_FALLBACK_MODEL = "gpt-4o"
 
-def _get_client() -> anthropic.AsyncAnthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    return _client
+
+def _get_anthropic() -> anthropic.AsyncAnthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return _anthropic_client
+
+
+def _get_openai() -> AsyncOpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+    return _openai_client
+
+
+async def _call_llm(system: str, user_content: str, max_tokens: int) -> tuple[str, str]:
+    """Call Anthropic Sonnet, fallback to GPT-4o on overload.
+
+    Returns (text, stop_reason). stop_reason is 'end_turn' for complete responses.
+    """
+    # Try Anthropic first
+    if settings.anthropic_api_key:
+        try:
+            client = _get_anthropic()
+            response = await client.messages.create(
+                model=_RECAP_MODEL,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user_content}],
+            )
+            return response.content[0].text.strip(), response.stop_reason
+        except anthropic.APIStatusError as e:
+            if e.status_code == 529:
+                log.warning("Anthropic overloaded, falling back to OpenAI GPT-4o")
+            else:
+                raise
+
+    # Fallback to OpenAI
+    if settings.openai_api_key:
+        client = _get_openai()
+        response = await client.chat.completions.create(
+            model=_OPENAI_FALLBACK_MODEL,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+        )
+        finish = response.choices[0].finish_reason
+        stop_reason = "end_turn" if finish == "stop" else finish
+        return response.choices[0].message.content.strip(), stop_reason
+
+    return "", "error"
 
 
 async def generate_track_facts(title: str, artist: str, album: str) -> str:
-    """Generate interesting facts about a track using Claude Sonnet."""
-    if not settings.anthropic_api_key:
+    """Generate interesting facts about a track. Sonnet → GPT-4o fallback."""
+    if not settings.anthropic_api_key and not settings.openai_api_key:
         return ""
 
-    client = _get_client()
-    try:
-        response = await client.messages.create(
-            model=_RECAP_MODEL,
-            max_tokens=700,
-            system=(
-                "Ты — TURDOM Assistant, музыкальный эксперт. "
-                "Напиши ровно 5 самых интересных тезисных фактов о треке. "
-                "Выбери лучшие из возможных категорий:\n"
-                "• Все артисты трека и их роли (feat, prod, sample)\n"
-                "• История создания — как записывали, кто участвовал, backstory\n"
-                "• Коммерческий успех — чарты, стриминг, платины, награды\n"
-                "• Использование в кино, играх, сериалах, рекламе, мемах, TikTok\n"
-                "• Сэмплы и отсылки — что засэмплили, на что ссылаются\n"
-                "• Связи артиста — с кем коллабил, откуда, лейбл\n"
-                "• Жанровый контекст — почему трек важен для жанра\n"
-                "• Живые выступления — культовые перформансы\n"
-                "• Скандалы или controversy вокруг трека\n"
-                "• Рекорды — первый/последний/единственный в своём роде\n\n"
-                "Выбирай самые яркие факты, а не очевидные. "
-                "Если про трек мало известно — напиши сколько есть, не выдумывай.\n\n"
-                "Формат: каждый факт с новой строки, начинается с эмоджи. "
-                "Пиши на русском, тезисно, без воды. "
-                "Уложись в 750 символов суммарно. "
-                + _HTML_FORMAT_INSTRUCTION
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Трек: {title}\nАртист: {artist}\nАльбом: {album}",
-                },
-            ],
-        )
-        facts = response.content[0].text.strip()
+    system = (
+        "Ты — TURDOM Assistant, музыкальный эксперт. "
+        "Напиши ровно 5 самых интересных тезисных фактов о треке. "
+        "Выбери лучшие из возможных категорий:\n"
+        "• Все артисты трека и их роли (feat, prod, sample)\n"
+        "• История создания — как записывали, кто участвовал, backstory\n"
+        "• Коммерческий успех — чарты, стриминг, платины, награды\n"
+        "• Использование в кино, играх, сериалах, рекламе, мемах, TikTok\n"
+        "• Сэмплы и отсылки — что засэмплили, на что ссылаются\n"
+        "• Связи артиста — с кем коллабил, откуда, лейбл\n"
+        "• Жанровый контекст — почему трек важен для жанра\n"
+        "• Живые выступления — культовые перформансы\n"
+        "• Скандалы или controversy вокруг трека\n"
+        "• Рекорды — первый/последний/единственный в своём роде\n\n"
+        "Выбирай самые яркие факты, а не очевидные. "
+        "Если про трек мало известно — напиши сколько есть, не выдумывай.\n\n"
+        "Формат: каждый факт с новой строки, начинается с эмоджи. "
+        "Пиши на русском, тезисно, без воды. "
+        "Уложись в 750 символов суммарно. "
+        + _HTML_FORMAT_INSTRUCTION
+    )
 
-        # Validate: check if response was cut off (stop_reason != 'end_turn')
-        if response.stop_reason != "end_turn":
-            log.warning(f"Facts for '{title}' cut off (stop_reason={response.stop_reason}), discarding")
+    try:
+        facts, stop_reason = await _call_llm(system, f"Трек: {title}\nАртист: {artist}\nАльбом: {album}", 700)
+
+        if stop_reason != "end_turn":
+            log.warning(f"Facts for '{title}' cut off (stop_reason={stop_reason}), discarding")
             return ""
 
         log.info(f"Generated facts for '{title}' by {artist}")
@@ -79,34 +119,26 @@ async def generate_pre_recap_teaser(
     top_contributor: str | None = None,
 ) -> str:
     """Generate a teaser at session end — builds intrigue before recap."""
-    if not settings.anthropic_api_key:
+    if not settings.anthropic_api_key and not settings.openai_api_key:
         return f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем прямо сейчас!"
 
-    client = _get_client()
+    system = (
+        "Ты — TURDOM Assistant, ведущий музыкальных сессий. Напиши короткий тизер (2-3 предложения) "
+        "который будет показан В КОНЦЕ сессии перед итогами. "
+        "Задача: создать интригу. Обыграй количество треков, участников, кто больше всех накидал. "
+        "Заверши чем-то типа 'Чем всё закончилось? 🥁' или 'А теперь — итоги!' "
+        "Стиль: неформальный, с эмоджи, как шоу-ведущий. "
+        + _HTML_FORMAT_INSTRUCTION
+    )
     try:
-        response = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=120,
-            system=(
-                "Ты — TURDOM Assistant, ведущий музыкальных сессий. Напиши короткий тизер (2-3 предложения) "
-                "который будет показан В КОНЦЕ сессии перед итогами. "
-                "Задача: создать интригу. Обыграй количество треков, участников, кто больше всех накидал. "
-                "Заверши чем-то типа 'Чем всё закончилось? 🥁' или 'А теперь — итоги!' "
-                "Стиль: неформальный, с эмоджи, как шоу-ведущий. "
-                + _HTML_FORMAT_INSTRUCTION
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Треков в плейлисте: {total_tracks}\n"
-                        f"Участники: {', '.join(participants)}\n"
-                        f"Больше всех треков добавил: {top_contributor or 'неизвестно'}"
-                    ),
-                },
-            ],
+        text, _ = await _call_llm(
+            system,
+            f"Треков в плейлисте: {total_tracks}\n"
+            f"Участники: {', '.join(participants)}\n"
+            f"Больше всех треков добавил: {top_contributor or 'неизвестно'}",
+            120,
         )
-        return response.content[0].text.strip()
+        return text or f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем прямо сейчас! 🥁"
     except Exception:
         return f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем прямо сейчас! 🥁"
 
@@ -123,18 +155,12 @@ _RECAP_BASE_SYSTEM = (
 
 async def _generate_recap_block(user_content: str, block_system: str) -> str:
     """Generate a single recap block via Sonnet."""
-    if not settings.anthropic_api_key:
+    if not settings.anthropic_api_key and not settings.openai_api_key:
         return ""
 
-    client = _get_client()
     try:
-        response = await client.messages.create(
-            model=_RECAP_MODEL,
-            max_tokens=500,
-            system=f"{_RECAP_BASE_SYSTEM}\n\n{block_system}",
-            messages=[{"role": "user", "content": user_content}],
-        )
-        return response.content[0].text.strip()
+        text, _ = await _call_llm(f"{_RECAP_BASE_SYSTEM}\n\n{block_system}", user_content, 500)
+        return text
     except Exception as e:
         log.error(f"Failed to generate recap block: {e}")
         return ""
@@ -155,7 +181,7 @@ async def generate_session_recap_blocks(
     Each block is generated by a separate Sonnet call for quality.
     Returns dict with keys: genres, transitions, mimic, rebel, facts.
     """
-    if not settings.anthropic_api_key:
+    if not settings.anthropic_api_key and not settings.openai_api_key:
         return {}
 
     user_context = (
