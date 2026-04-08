@@ -1632,19 +1632,40 @@ async def cmd_preview(message: Message):
         # Build card
         artist_str = ", ".join(a.name for a in track.artists)
         track_display = format_track(track.name, artist_str, track.id)
+        album_display = format_album(track.album.name)
         cover_url = track.album.images[0].url if track.album.images else None
+
+        # Generate facts
+        await message.answer("⏳ Генерирую факты...")
+        facts = await generate_track_facts(track.name, artist_str, track.album.name)
+        facts_text = f"\n\n💡 {facts}" if facts else ""
 
         text = (
             f"🎵 {track_display}\n"
-            f"💿 {format_album(track.album.name)}\n"
-            f"👤 preview mode\n\n"
-            f"💡 Это превью карточки. В сессии будут кнопки Keep/Drop и AI-факты."
+            f"💿 {album_display}"
+            f"{facts_text}"
         )
+
+        # Trim facts if caption too long (photo caption limit 1024)
+        if cover_url and len(text) > 1024 and facts_text:
+            fact_lines = facts.split("\n")
+            trimmed = []
+            header = f"🎵 {track_display}\n💿 {album_display}"
+            available = 1024 - len(header) - 3
+            total_len = 0
+            for line in fact_lines:
+                if total_len + len(line) + 1 <= available:
+                    trimmed.append(line)
+                    total_len += len(line) + 1
+                else:
+                    break
+            facts_text = f"\n\n💡 " + "\n".join(trimmed) if trimmed else ""
+            text = f"🎵 {track_display}\n💿 {album_display}{facts_text}"
 
         if cover_url:
             await message.answer_photo(photo=cover_url, caption=text, parse_mode="HTML")
         else:
-            await message.answer(text, parse_mode="HTML")
+            await message.answer(text, parse_mode="HTML", link_preview_options=_NO_PREVIEW)
 
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
