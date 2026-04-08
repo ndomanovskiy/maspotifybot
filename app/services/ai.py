@@ -97,6 +97,7 @@ _RECAP_MODEL = "claude-sonnet-4-6"
 _RECAP_BASE_SYSTEM = (
     "Ты — TURDOM Assistant, ведущий музыкальных сессий группы друзей. "
     "Пиши на русском, неформально, с эмоджи. Не повторяй числа и статистику. "
+    "НЕ пиши заголовок блока — он уже добавлен. Сразу начинай с содержания. "
     + _HTML_FORMAT_INSTRUCTION
 )
 
@@ -110,7 +111,7 @@ async def _generate_recap_block(user_content: str, block_system: str) -> str:
     try:
         response = await client.messages.create(
             model=_RECAP_MODEL,
-            max_tokens=300,
+            max_tokens=500,
             system=f"{_RECAP_BASE_SYSTEM}\n\n{block_system}",
             messages=[{"role": "user", "content": user_content}],
         )
