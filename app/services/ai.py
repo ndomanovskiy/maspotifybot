@@ -210,7 +210,6 @@ async def generate_session_recap_blocks(
     mimic_info: str,
     rebel_info: str,
     killers_info: str,
-    eggs_info: str = "",
 ) -> dict[str, str]:
     """Generate AI commentary blocks for session recap.
 
@@ -263,26 +262,11 @@ async def generate_session_recap_blocks(
         ),
     }
 
-    # Add dessert block if there are easter eggs
-    if eggs_info:
-        block_prompts["dessert"] = (
-            "В контексте есть пасхалки участников — секреты которые они спрятали в своих треках. "
-            "Раскрой каждую пасхалку: кто что задумал, получилось ли это заметить по трекам, "
-            "насколько хитро спрятано. Прокомментируй каждую с юмором и восхищением. "
-            "Если пасхалка связана с конкретными треками — укажи какими. "
-            "3-5 предложений на каждую пасхалку."
-        )
-
-    # Run blocks in parallel — dessert gets separate context with eggs
+    # Run all blocks in parallel
     import asyncio
     keys = list(block_prompts.keys())
-
-    async def _gen_block(key):
-        ctx = user_context + eggs_info if key == "dessert" else user_context
-        return await _generate_recap_block(ctx, block_prompts[key])
-
     results = await asyncio.gather(
-        *[_gen_block(k) for k in keys],
+        *[_generate_recap_block(user_context, block_prompts[k]) for k in keys],
         return_exceptions=True,
     )
 

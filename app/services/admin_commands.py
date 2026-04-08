@@ -394,17 +394,10 @@ async def _generate_and_save_recap(
     rebel_info = f"Бунтарь: {rebel} ({max_drops} дропов)" if rebel else "нет"
     killers_info = f"Киллеры: {', '.join(killers)}" if killers else "нет"
 
-    eggs_info = ""
-    if easter_eggs:
-        eggs_info = "\n\nПасхалки участников:\n"
-        for name, secret in easter_eggs.items():
-            eggs_info += f"  {name}: {secret}\n"
-
     ai_blocks = await generate_session_recap_blocks(
         total, kept, dropped,
         tracks_for_ai, participant_names,
         mimic_info, rebel_info, killers_info,
-        eggs_info,
     )
 
     # === BUILD MESSAGES ===
@@ -431,16 +424,40 @@ async def _generate_and_save_recap(
     if ai_blocks.get("facts"):
         messages.append(f"💡 <b>Забавные факты</b>\n\n{ai_blocks['facts']}")
 
-    # Easter eggs block
+    # Easter eggs — one block per person with their own AI analysis
     if easter_eggs:
-        if ai_blocks.get("dessert"):
-            messages.append(f"🍰 <b>На десерт</b>\n\n{ai_blocks['dessert']}")
-        else:
-            # Fallback: just list secrets
-            egg_lines = ["🍰 <b>На десерт — пасхалки сессии!</b>\n"]
-            for name, secret in easter_eggs.items():
-                egg_lines.append(f"🥚 {name}: <i>{secret}</i>")
-            messages.append("\n".join(egg_lines))
+        from app.services.ai import _generate_recap_block, _RECAP_BASE_SYSTEM
+        import asyncio
+
+        async def _gen_egg_block(name: str, secret: str) -> str:
+            # Get this person's tracks
+            person_tracks = [t for t in tracks_data if t["added_by"] == name]
+            tracks_list = "\n".join(
+                f"• {t['title']} — {t['artist']}" for t in person_tracks
+            )
+            ctx = (
+                f"Участник: {name}\n"
+                f"Пасхалка: {secret}\n\n"
+                f"Треки этого участника:\n{tracks_list}"
+            )
+            prompt = (
+                "Раскрой пасхалку участника. Сопоставь его секрет с его треками. "
+                "Укажи какие треки связаны с пасхалкой и как. "
+                "Прокомментируй с юмором — насколько хитро спрятано, заметили бы другие. "
+                "3-5 предложений."
+            )
+            return await _generate_recap_block(ctx, prompt)
+
+        egg_results = await asyncio.gather(
+            *[_gen_egg_block(name, secret) for name, secret in easter_eggs.items()],
+            return_exceptions=True,
+        )
+
+        for (name, secret), result in zip(easter_eggs.items(), egg_results):
+            if isinstance(result, Exception) or not result:
+                messages.append(f"🥚 <b>Пасхалка от {name}</b>\n\n<i>{secret}</i>")
+            else:
+                messages.append(f"🥚 <b>Пасхалка от {name}</b>\n\n{result}")
 
     # Save combined for DB (joined with separator)
     recap_text = "\n\n---\n\n".join(messages)
