@@ -81,7 +81,8 @@ async def cmd_start(message: Message):
         "/history — история сессий\n"
         "/check — проверить трек на дубликат\n"
         "/secret — оставить пасхалку в плейлисте\n"
-        "/genres — жанровые плейлисты TURDOM"
+        "/genres — жанровые плейлисты TURDOM\n"
+        "/get — ссылка на плейлист по номеру"
     )
 
     if is_admin(message.from_user.id):
@@ -199,6 +200,38 @@ async def cmd_setnextlink(message: Message):
         await message.answer(f"✅ Invite-ссылка сохранена для <b>{updated}</b>", parse_mode="HTML")
     else:
         await message.answer("❌ Нет upcoming плейлиста в базе.")
+
+
+@dp.message(Command("get"))
+async def cmd_get(message: Message):
+    if not await is_registered(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников TURDOM.")
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Укажи номер: /get 92")
+        return
+
+    try:
+        num = int(args[1].strip())
+    except ValueError:
+        await message.answer("Укажи номер: /get 92")
+        return
+
+    async with _pool.acquire() as conn:
+        pl = await conn.fetchrow(
+            "SELECT name, url, status FROM playlists WHERE number = $1", num
+        )
+
+    if not pl:
+        await message.answer(f"TURDOM#{num} не найден.")
+        return
+
+    await message.answer(
+        f"🎧 <b>{pl['name']}</b>\n\n{pl['url']}",
+        parse_mode="HTML", link_preview_options=_NO_PREVIEW,
+    )
 
 
 @dp.message(Command("genres"))
