@@ -78,7 +78,8 @@ async def cmd_start(message: Message):
         "/stats — общая статистика TURDOM\n"
         "/mystats — твоя персональная статистика\n"
         "/history — история сессий\n"
-        "/check — проверить трек на дубликат"
+        "/check — проверить трек на дубликат\n"
+        "/secret — оставить пасхалку в плейлисте"
     )
 
     if is_admin(message.from_user.id):
@@ -707,6 +708,80 @@ async def cmd_leave(message: Message):
                 _active_session_id, tid,
             )
     await message.answer(f"👋 Ты вышел из сессии. Участников: {len(_participants)}")
+
+
+@dp.message(Command("secret"))
+async def cmd_secret(message: Message):
+    if not await is_registered(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников TURDOM.")
+        return
+
+    # Find latest upcoming/active session
+    async with _pool.acquire() as conn:
+        session = await conn.fetchrow(
+            """SELECT s.id FROM sessions s
+               JOIN playlists p ON s.playlist_spotify_id = p.spotify_id
+               WHERE p.status IN ('active', 'upcoming') OR s.status = 'active'
+               ORDER BY s.id DESC LIMIT 1"""
+        )
+        if not session:
+            # No active session — check upcoming playlist, create session placeholder later
+            # For now, just save to latest session
+            session = await conn.fetchrow(
+                "SELECT id FROM sessions ORDER BY id DESC LIMIT 1"
+            )
+
+    if not session:
+        await message.answer("Нет активной или предстоящей сессии.")
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        # Show explanation and current secret
+        async with _pool.acquire() as conn:
+            current = await conn.fetchval(
+                "SELECT secret_note FROM session_participants WHERE session_id = $1 AND telegram_id = $2",
+                session["id"], message.from_user.id,
+            )
+
+        msg = (
+            "🥚 <b>Пасхалки TURDOM</b>\n\n"
+            "Оставь секрет в своих треках! В конце сессии в рекапе раскроем все пасхалки "
+            "и посмотрим, кто что заметил.\n\n"
+            "<b>Примеры:</b>\n"
+            "• «Все мои треки — из саундтреков к фильмам 90-х»\n"
+            "• «Первые буквы моих треков складываются в слово»\n"
+            "• «Добавил 3 трека одного артиста под разными именами»\n"
+            "• «Каждый мой трек — из другой страны»\n"
+            "• «Названия треков — это стенды из JoJo»\n\n"
+            "Напиши: <code>/secret твой секрет</code>"
+        )
+        if current:
+            msg += f"\n\n🔒 Твой текущий секрет: <i>{current}</i>"
+
+        await message.answer(msg, parse_mode="HTML")
+        return
+
+    secret = args[1].strip()
+
+    async with _pool.acquire() as conn:
+        # Upsert: update if participant exists, insert if not
+        exists = await conn.fetchval(
+            "SELECT 1 FROM session_participants WHERE session_id = $1 AND telegram_id = $2",
+            session["id"], message.from_user.id,
+        )
+        if exists:
+            await conn.execute(
+                "UPDATE session_participants SET secret_note = $1 WHERE session_id = $2 AND telegram_id = $3",
+                secret, session["id"], message.from_user.id,
+            )
+        else:
+            await conn.execute(
+                "INSERT INTO session_participants (session_id, telegram_id, secret_note) VALUES ($1, $2, $3)",
+                session["id"], message.from_user.id, secret,
+            )
+
+    await message.answer(f"🥚 Секрет сохранён! Раскроем в рекапе после сессии.\n\n🔒 <i>{secret}</i>", parse_mode="HTML")
 
 
 @dp.message(Command("kick"))

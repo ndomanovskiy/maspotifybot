@@ -110,6 +110,8 @@ MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS recap_text TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS distributed_at TIMESTAMPTZ",
     "ALTER TABLE playlist_tracks ADD COLUMN IF NOT EXISTS genre TEXT",
+    # v3: easter eggs
+    "ALTER TABLE session_participants ADD COLUMN IF NOT EXISTS secret_note TEXT",
     """CREATE TABLE IF NOT EXISTS action_log (
         id SERIAL PRIMARY KEY,
         action TEXT NOT NULL,

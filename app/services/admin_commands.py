@@ -294,13 +294,16 @@ async def _generate_and_save_recap(
             session_id,
         )
 
-        participant_names = [r["name"] for r in await conn.fetch(
-            """SELECT COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name) as name
+        participant_rows = await conn.fetch(
+            """SELECT COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name) as name,
+                      sp.secret_note
                FROM session_participants sp
                JOIN users u ON sp.telegram_id = u.telegram_id
                WHERE sp.session_id = $1""",
             session_id,
-        )]
+        )
+        participant_names = [r["name"] for r in participant_rows]
+        easter_eggs = {r["name"]: r["secret_note"] for r in participant_rows if r["secret_note"]}
 
     total = len(tracks_data)
     kept = sum(1 for t in tracks_data if t["vote_result"] == "keep")
@@ -391,10 +394,17 @@ async def _generate_and_save_recap(
     rebel_info = f"Бунтарь: {rebel} ({max_drops} дропов)" if rebel else "нет"
     killers_info = f"Киллеры: {', '.join(killers)}" if killers else "нет"
 
+    eggs_info = ""
+    if easter_eggs:
+        eggs_info = "\n\nПасхалки участников:\n"
+        for name, secret in easter_eggs.items():
+            eggs_info += f"  {name}: {secret}\n"
+
     ai_blocks = await generate_session_recap_blocks(
         total, kept, dropped,
         tracks_for_ai, participant_names,
         mimic_info, rebel_info, killers_info,
+        eggs_info,
     )
 
     # === BUILD MESSAGES ===
@@ -420,6 +430,17 @@ async def _generate_and_save_recap(
 
     if ai_blocks.get("facts"):
         messages.append(f"💡 <b>Забавные факты</b>\n\n{ai_blocks['facts']}")
+
+    # Easter eggs block
+    if easter_eggs:
+        if ai_blocks.get("dessert"):
+            messages.append(f"🍰 <b>На десерт</b>\n\n{ai_blocks['dessert']}")
+        else:
+            # Fallback: just list secrets
+            egg_lines = ["🍰 <b>На десерт — пасхалки сессии!</b>\n"]
+            for name, secret in easter_eggs.items():
+                egg_lines.append(f"🥚 {name}: <i>{secret}</i>")
+            messages.append("\n".join(egg_lines))
 
     # Save combined for DB (joined with separator)
     recap_text = "\n\n---\n\n".join(messages)

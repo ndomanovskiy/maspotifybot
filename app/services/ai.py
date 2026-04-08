@@ -179,6 +179,7 @@ async def generate_session_recap_blocks(
     mimic_info: str,
     rebel_info: str,
     killers_info: str,
+    eggs_info: str = "",
 ) -> dict[str, str]:
     """Generate AI commentary blocks for session recap.
 
@@ -193,6 +194,7 @@ async def generate_session_recap_blocks(
         f"Всего: {total_tracks}, осталось: {kept}, удалено: {dropped}\n"
         f"{mimic_info}\n{rebel_info}\n{killers_info}\n\n"
         f"Треки (в порядке прослушивания, с жанрами и фактами):\n{tracks_info}"
+        f"{eggs_info}"
     )
 
     block_prompts = {
@@ -230,6 +232,16 @@ async def generate_session_recap_blocks(
             "Подай как забавные наблюдения. 3-4 предложения."
         ),
     }
+
+    # Add dessert block if there are easter eggs
+    if eggs_info:
+        block_prompts["dessert"] = (
+            "В контексте есть пасхалки участников — секреты которые они спрятали в своих треках. "
+            "Раскрой каждую пасхалку: кто что задумал, получилось ли это заметить по трекам, "
+            "насколько хитро спрятано. Прокомментируй каждую с юмором и восхищением. "
+            "Если пасхалка связана с конкретными треками — укажи какими. "
+            "3-5 предложений на каждую пасхалку."
+        )
 
     # Run all 5 blocks in parallel
     import asyncio
