@@ -2295,6 +2295,38 @@ async def setup_bot(pool: asyncpg.Pool):
 
     await load_token_from_db(pool)
 
+    # Set bot commands menu
+    from aiogram.types import BotCommand, BotCommandScopeChat
+
+    # Commands for all users
+    user_commands = [
+        BotCommand(command="start", description="Справка по командам"),
+        BotCommand(command="next", description="Следующий плейлист"),
+        BotCommand(command="get", description="Ссылка на плейлист по номеру"),
+        BotCommand(command="join", description="Присоединиться к сессии"),
+        BotCommand(command="leave", description="Выйти из сессии"),
+        BotCommand(command="secret", description="Оставить пасхалку"),
+        BotCommand(command="check", description="Проверить дубликат"),
+        BotCommand(command="stats", description="Общая статистика"),
+        BotCommand(command="mystats", description="Моя статистика"),
+        BotCommand(command="history", description="История сессий"),
+        BotCommand(command="genres", description="Жанровые плейлисты"),
+    ]
+    await bot.set_my_commands(user_commands)
+
+    # Extended commands for admin
+    admin_commands = user_commands + [
+        BotCommand(command="session", description="start / end / kick @user"),
+        BotCommand(command="distribute", description="Раскидать треки по жанрам"),
+        BotCommand(command="recap", description="Рекап сессии"),
+        BotCommand(command="close_playlist", description="Закрыть плейлист"),
+        BotCommand(command="create_next", description="Создать следующий плейлист"),
+        BotCommand(command="health", description="Статус плейлиста"),
+        BotCommand(command="preview", description="Превью карточки трека"),
+        BotCommand(command="dbinfo", description="Инфо о базе"),
+    ]
+    await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=settings.telegram_admin_id))
+
     # Recover active session if bot restarted
     global _active_session_id, _active_playlist_id, _participants, _current_session_track_id, _played_track_ids, _track_messages
     async with pool.acquire() as conn:
