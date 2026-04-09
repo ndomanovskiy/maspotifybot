@@ -8,16 +8,18 @@ from app.spotify.auth import get_spotify
 from app.services.playlists import check_duplicate, get_track_isrc
 from app.services.ai import generate_track_facts
 from app.services.genre_resolver import resolve_and_save_genre
+from app.services.genre_distributor import check_previously_dropped
 from app.services.normalize import normalize_title, normalize_artist
 
 log = logging.getLogger(__name__)
 
 
 class DuplicateWatcher:
-    def __init__(self, pool: asyncpg.Pool, notify_callback, confirm_callback=None):
+    def __init__(self, pool: asyncpg.Pool, notify_callback, confirm_callback=None, drop_warn_callback=None):
         self._pool = pool
-        self._notify = notify_callback  # async fn(telegram_id, track_title, artist, duplicates, playlist_name, track_id)
-        self._confirm = confirm_callback  # async fn(telegram_id, track_title, artist, duplicates, playlist_name, track_id, playlist_spotify_id) — for fuzzy matches
+        self._notify = notify_callback
+        self._confirm = confirm_callback
+        self._drop_warn = drop_warn_callback
         self._running = False
 
     async def start(self):
@@ -231,6 +233,28 @@ class DuplicateWatcher:
                             track_title=track.name,
                             artist=track_artist,
                             duplicates=fuzzy_only,
+                            playlist_name=pl["name"],
+                            track_id=track.id,
+                            playlist_spotify_id=playlist_spotify_id,
+                        )
+
+                # Check if track was previously dropped
+                if not duplicates:
+                    drops = await check_previously_dropped(self._pool, track.id)
+                    if drops and self._drop_warn:
+                        telegram_id = None
+                        if added_by:
+                            async with self._pool.acquire() as conn:
+                                row = await conn.fetchrow(
+                                    "SELECT telegram_id FROM users WHERE spotify_id = $1", added_by
+                                )
+                                if row:
+                                    telegram_id = row["telegram_id"]
+                        await self._drop_warn(
+                            telegram_id=telegram_id,
+                            track_title=track.name,
+                            artist=track_artist,
+                            drops=drops,
                             playlist_name=pl["name"],
                             track_id=track.id,
                             playlist_spotify_id=playlist_spotify_id,

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # Last.fm
     lastfm_api_key: str = ""
+    lastfm_shared_secret: str = ""
 
     # Voting
     vote_drop_threshold: int = 2

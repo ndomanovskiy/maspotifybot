@@ -167,9 +167,39 @@ async def setup_bot(pool):
         except Exception as e:
             log.debug(f"Failed to send fuzzy confirm to {target}: {e}")
 
+    async def on_drop_warn(telegram_id, track_title, artist, drops, playlist_name, track_id, playlist_spotify_id):
+        """Warn that a track was previously dropped."""
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+        track_fmt = format_track(track_title, artist, track_id)
+        drop_lines = [f"  ❌ {d['playlist']} ({d['date']}) — добавил {d['added_by']}" for d in drops]
+        drop_text = "\n".join(drop_lines)
+
+        msg = (
+            f"⚠️ <b>Ранее дропнутый трек!</b>\n\n"
+            f"🎵 {track_fmt}\nДобавлен в <b>{playlist_name}</b>\n\n"
+            f"Был дропнут:\n{drop_text}\n\n"
+            f"Оставить или убрать?"
+        )
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Оставить", callback_data=f"keep_dup:{track_id}"),
+            InlineKeyboardButton(text="🗑 Убрать", callback_data=f"confirm_dup:{playlist_spotify_id}:{track_id}"),
+        ]])
+
+        target = telegram_id or settings.telegram_admin_id
+        try:
+            await send(target, msg, reply_markup=kb)
+        except Exception as e:
+            log.debug(f"Failed to send drop warning to {target}: {e}")
+
     set_duplicate_notify(on_duplicate_found)
     set_fuzzy_confirm(on_fuzzy_duplicate_confirm)
-    watcher = DuplicateWatcher(pool, on_duplicate_found, confirm_callback=on_fuzzy_duplicate_confirm)
+    watcher = DuplicateWatcher(
+        pool, on_duplicate_found,
+        confirm_callback=on_fuzzy_duplicate_confirm,
+        drop_warn_callback=on_drop_warn,
+    )
     asyncio.create_task(watcher.start())
 
     init_health()

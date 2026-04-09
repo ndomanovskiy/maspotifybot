@@ -650,13 +650,24 @@ async def on_dbinfo(message: Message):
 @router.message(Command("backfill_genres"))
 @require_admin
 async def on_backfill_genres(message: Message):
-    await message.answer("⏳ Запускаю бэкфилл жанров...")
+    args = message.text.split(maxsplit=1)
+    reset = len(args) > 1 and args[1].strip().lower() == "reset"
+
+    if reset:
+        async with get_pool().acquire() as conn:
+            await conn.execute("UPDATE playlist_tracks SET genre = NULL")
+        await message.answer("🔄 Все жанры сброшены. Запускаю бэкфилл через Last.fm + AI...\n\n⚠️ Если бэкфилл прервётся — запусти /backfill_genres повторно.")
+    else:
+        await message.answer("⏳ Запускаю бэкфилл жанров (только пустые)...")
+
     try:
         result = await backfill_genres(get_pool())
-        await message.answer(
+        await reply(
+            message,
             f"✅ Бэкфилл готов!\n"
             f"Обработано: {result['processed']}\n"
-            f"Жанры найдены: {result['resolved']}"
+            f"Жанры найдены: {result['resolved']}\n"
+            f"Не определено: {result['unknown']}",
         )
     except Exception as e:
         log.error(f"Genre backfill failed: {e}")
