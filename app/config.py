@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
 
+    # Last.fm
+    lastfm_api_key: str = ""
+
     # Voting
     vote_drop_threshold: int = 2
 
