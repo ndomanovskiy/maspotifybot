@@ -5,7 +5,7 @@
 ```mermaid
 sequenceDiagram
     participant Admin
-    participant Bot as handlers.py
+    participant Bot as bot/
     participant DB
     participant Spotify
     participant Users
@@ -45,17 +45,24 @@ sequenceDiagram
             Users->>Bot: Click Keep or Drop
             Bot->>DB: INSERT votes
             Bot->>DB: Count drops vs threshold
-            alt Drop threshold reached
-                Bot->>DB: UPDATE vote_result = 'drop'
-                Bot->>Spotify: Remove track from playlist
-                Bot->>Spotify: Skip to next
-                Bot->>Users: "Track dropped!"
-            else All voted, keep wins
-                Bot->>DB: UPDATE vote_result = 'keep'
-                Bot->>Spotify: Skip to next
-                Bot->>Users: "Track kept!"
+            alt Drop threshold reached (not all voted yet)
+                Bot->>DB: UPDATE vote_result = 'drop' (mark only)
+                Bot->>Bot: Update button counters
+            else Not enough drops yet
+                Bot->>Bot: Update button counters
             end
         end
+
+        Note over Users,DB: When all participants voted
+        Bot->>DB: Check vote_result
+        alt vote_result = 'drop'
+            Bot->>Spotify: Remove track from playlist
+            Bot->>Users: Finalize card (dropped)
+        else keep wins
+            Bot->>DB: UPDATE vote_result = 'keep'
+            Bot->>Users: Finalize card (kept)
+        end
+        Bot->>Spotify: Skip to next (if track is current)
     end
 
     Note over Admin,Users: PHASE 5: Session End
@@ -84,7 +91,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant User
-    participant Bot as handlers.py
+    participant Bot as bot/
     participant Vote as voting.py
     participant DB
 
@@ -96,15 +103,20 @@ sequenceDiagram
 
     Vote->>Vote: threshold = ceil(participants / 2)
 
-    alt drop_count >= threshold
+    alt drop_count >= threshold (not all voted)
         Vote->>DB: UPDATE session_tracks.vote_result = 'drop'
-        Vote-->>Bot: {status: finalized, vote_result: drop}
-        Bot->>Bot: remove_track_from_playlist()
-        Bot->>Bot: skip_to_next()
-    else total_votes >= participants AND drops < threshold
-        Vote->>DB: UPDATE session_tracks.vote_result = 'keep'
-        Vote-->>Bot: {status: finalized, vote_result: keep}
-        Bot->>Bot: skip_to_next()
+        Vote-->>Bot: {status: voted, vote_result: drop}
+        Bot->>Bot: Update button counters
+    else all voted (total_votes >= participants)
+        alt vote_result = 'drop'
+            Vote-->>Bot: {status: finalized, vote_result: drop}
+            Bot->>Bot: remove_track_from_playlist()
+        else drops < threshold
+            Vote->>DB: UPDATE session_tracks.vote_result = 'keep'
+            Vote-->>Bot: {status: finalized, vote_result: keep}
+        end
+        Bot->>Bot: finalize_card()
+        Bot->>Bot: skip_to_next() (if track is current)
     else waiting for more votes
         Vote-->>Bot: {status: voted}
         Bot->>Bot: Update button counters
@@ -157,7 +169,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Admin
-    participant Bot as handlers.py
+    participant Bot as bot/
     participant AC as admin_commands
     participant GD as genre_distributor
     participant DB
@@ -206,7 +218,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Admin
-    participant Bot as handlers.py
+    participant Bot as bot/
     participant AC as admin_commands
     participant PL as playlists.py
     participant GR as genre_resolver
@@ -253,7 +265,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant User
-    participant Bot as handlers.py
+    participant Bot as bot/
     participant DB
 
     User->>Bot: /reg https://open.spotify.com/user/xyz
@@ -267,7 +279,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Admin
-    participant Bot as handlers.py
+    participant Bot as bot/
     participant Auth as auth.py
     participant Spotify
     participant DB
@@ -292,7 +304,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Main as main.py
-    participant Bot as handlers.py
+    participant Bot as bot/
     participant Auth as auth.py
     participant DW as DuplicateWatcher
     participant DB

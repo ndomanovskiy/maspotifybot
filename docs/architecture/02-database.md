@@ -44,6 +44,7 @@ erDiagram
         serial id PK
         text playlist_spotify_id
         text playlist_name
+        integer current_track_id
         timestamptz started_at
         timestamptz ended_at
         text status "active | ended"
@@ -68,7 +69,8 @@ erDiagram
     session_participants {
         serial id PK
         integer session_id FK
-        bigint telegram_id
+        bigint telegram_id FK
+        text secret_note
         timestamptz joined_at
         timestamptz left_at
         boolean active
@@ -77,7 +79,7 @@ erDiagram
     votes {
         serial id PK
         integer session_track_id FK
-        bigint telegram_id
+        bigint telegram_id FK
         text vote "keep | drop"
         timestamptz voted_at
     }
@@ -85,7 +87,7 @@ erDiagram
     ratings {
         serial id PK
         integer session_track_id FK
-        bigint telegram_id
+        bigint telegram_id FK
         integer rhymes
         integer structure
         integer style
@@ -114,11 +116,29 @@ erDiagram
         timestamptz expires_at
     }
 
+    schema_version {
+        integer version PK
+        timestamptz applied_at
+        text description
+    }
+
+    track_messages {
+        serial id PK
+        integer session_track_id FK
+        bigint chat_id
+        integer message_id
+        text caption
+    }
+
     playlists ||--o{ playlist_tracks : has
     sessions ||--o{ session_tracks : has
     sessions ||--o{ session_participants : has
     session_tracks ||--o{ votes : has
     session_tracks ||--o{ ratings : has
+    session_tracks ||--o{ track_messages : has
+    users ||--o{ session_participants : has
+    users ||--o{ votes : has
+    users ||--o{ ratings : has
 ```
 
 ## Key Relationships
@@ -131,13 +151,18 @@ erDiagram
 | session_tracks → votes | 1:N | votes.session_track_id |
 | session_tracks → ratings | 1:N | ratings.session_track_id |
 | playlists → sessions | 1:N | sessions.playlist_spotify_id = playlists.spotify_id |
+| session_tracks → track_messages | 1:N | track_messages.session_track_id |
+| users → session_participants | 1:N FK | session_participants.telegram_id → users.telegram_id (ON DELETE CASCADE) |
+| users → votes | 1:N FK | votes.telegram_id → users.telegram_id (ON DELETE CASCADE) |
+| users → ratings | 1:N FK | ratings.telegram_id → users.telegram_id (ON DELETE CASCADE) |
 | session_tracks ↔ playlist_tracks | Implicit | spotify_track_id (no FK) |
-| users ↔ session_participants | Implicit | telegram_id (no FK) |
 | users ↔ playlist_tracks | Implicit | added_by_spotify_id = users.spotify_id (no FK) |
 
 ## Notes
 
-- **No foreign keys enforced** — all relationships are implicit via matching columns
+- **3 foreign keys on telegram_id** — `session_participants`, `votes`, `ratings` reference `users.telegram_id` (ON DELETE CASCADE)
+- **18 indexes** on frequently queried columns (Phase 4)
+- **Versioned migrations** tracked in `schema_version` (32 migrations)
 - `playlist_tracks` unique constraint: `(playlist_id, spotify_track_id)` — same track can exist in multiple playlists
 - `votes` unique constraint: `(session_track_id, telegram_id)` — one vote per user per track
 - `session_tracks` ↔ `playlist_tracks` joined via `spotify_track_id` — used in distribute to get genre

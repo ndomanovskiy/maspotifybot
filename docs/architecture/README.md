@@ -12,10 +12,11 @@ Collaborative music listening bot: Telegram + Spotify. Users add tracks to share
 | [02-database.md](02-database.md) | Database schema and relationships |
 | [03-flows.md](03-flows.md) | Main user flows with sequence diagrams |
 | [04-commands.md](04-commands.md) | All bot commands reference |
+| [05-session-state.md](05-session-state.md) | SessionManager lifecycle & state |
 
 ## Tech Stack
 
-- **Bot:** Python 3.12, aiogram v3
+- **Bot:** Python 3.10+, aiogram v3
 - **Spotify:** tekore (async)
 - **DB:** PostgreSQL, asyncpg
 - **AI:** OpenAI GPT-4o-mini

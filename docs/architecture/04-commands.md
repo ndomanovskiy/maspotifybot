@@ -14,6 +14,8 @@
 | `/history [N]` | Registered | Paginated session history or session N details |
 | `/join` | Registered | Request to join active session |
 | `/leave` | Registered | Leave current session |
+| `/secret [text]` | Registered | Leave easter egg for session recap |
+| `/genres` | Registered | List genre playlists with links |
 
 ## Admin Commands — Session
 
@@ -21,6 +23,9 @@
 |---------|-------------|
 | `/auth` | Start Spotify OAuth flow |
 | `/session <playlist_url>` | Create session for playlist |
+| `/session start` | Create session (auto-finds upcoming playlist) |
+| `/session end` | End active session |
+| `/session kick @user` | Kick user from session |
 | `/end` | End active session |
 | `/kick @username` | Remove user from session |
 
@@ -45,6 +50,7 @@
 | `/backfill_genres` | Backfill missing genres for all tracks |
 | `/preview <track>` | Preview track card rendering |
 | `/dbinfo` | DB overview: sessions, playlists, users, action log |
+| `/health` | Playlist health check (facts, genres) |
 
 ## Inline Buttons (Callbacks)
 
@@ -65,6 +71,9 @@
 | `redistribute:<N>` | Already distributed | Force re-distribute |
 | `redistribute:cancel` | Already distributed | Cancel |
 | `rerecap:<N>` | Recap exists | Regenerate recap |
+| `regen_facts:<track_id>` | Track card (admin) | Regenerate AI facts |
+| `recap_page:<N>:<page>` | Recap carousel | Navigate recap pages |
+| `noop` | Recap page counter | No action |
 | `history:<offset>` | History pagination | Navigate pages |
 
 ## Post-Session Flow (Typical Admin Sequence)
