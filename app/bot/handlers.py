@@ -1332,6 +1332,13 @@ async def _on_track_change(info: TrackInfo):
     session_track_id = await create_session_track(_pool, _active_session_id, info)
     _current_session_track_id = session_track_id
 
+    # Persist current track to DB for recovery
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE sessions SET current_track_id = $1 WHERE id = $2",
+            session_track_id, _active_session_id,
+        )
+
     # Resolve added_by Spotify ID to Telegram name
     added_by_name = None
     if info.added_by:
@@ -1438,6 +1445,15 @@ async def _on_track_change(info: TrackInfo):
             log.warning(f"Failed to send track to {tid}: {e}")
 
     _track_messages[session_track_id] = sent_messages
+
+    # Persist to DB for recovery
+    async with _pool.acquire() as conn:
+        for chat_id, msg_id, caption in sent_messages:
+            await conn.execute(
+                """INSERT INTO track_messages (session_track_id, chat_id, message_id, caption)
+                   VALUES ($1, $2, $3, $4) ON CONFLICT (session_track_id, chat_id) DO NOTHING""",
+                session_track_id, chat_id, msg_id, caption,
+            )
 
 
 async def _update_vote_buttons(session_track_id: int):
@@ -2279,20 +2295,53 @@ async def setup_bot(pool: asyncpg.Pool):
     await load_token_from_db(pool)
 
     # Recover active session if bot restarted
-    global _active_session_id, _active_playlist_id, _participants
+    global _active_session_id, _active_playlist_id, _participants, _current_session_track_id, _played_track_ids, _track_messages
     async with pool.acquire() as conn:
         active = await conn.fetchrow(
-            "SELECT id, playlist_spotify_id FROM sessions WHERE status = 'active' ORDER BY id DESC LIMIT 1"
+            "SELECT id, playlist_spotify_id, current_track_id FROM sessions WHERE status = 'active' ORDER BY id DESC LIMIT 1"
         )
         if active:
             _active_session_id = active["id"]
             _active_playlist_id = active["playlist_spotify_id"]
+            _current_session_track_id = active["current_track_id"]
+
+            # Recover participants
             rows = await conn.fetch(
                 "SELECT telegram_id FROM session_participants WHERE session_id = $1 AND active = TRUE",
                 _active_session_id,
             )
             _participants = [r["telegram_id"] for r in rows]
-            log.info(f"Recovered active session {_active_session_id} with {len(_participants)} participants")
+
+            # Recover played track IDs
+            played = await conn.fetch(
+                "SELECT spotify_track_id FROM session_tracks WHERE session_id = $1",
+                _active_session_id,
+            )
+            _played_track_ids = {r["spotify_track_id"] for r in played}
+
+            # Recover track messages
+            tm_rows = await conn.fetch(
+                """SELECT tm.session_track_id, tm.chat_id, tm.message_id, tm.caption
+                   FROM track_messages tm
+                   JOIN session_tracks st ON tm.session_track_id = st.id
+                   WHERE st.session_id = $1""",
+                _active_session_id,
+            )
+            for r in tm_rows:
+                stid = r["session_track_id"]
+                if stid not in _track_messages:
+                    _track_messages[stid] = []
+                _track_messages[stid].append((r["chat_id"], r["message_id"], r["caption"]))
+
+            log.info(
+                f"Recovered active session {_active_session_id}: "
+                f"{len(_participants)} participants, {len(_played_track_ids)} played tracks, "
+                f"{len(_track_messages)} track messages"
+            )
+
+            # Restart monitor
+            monitor.on_track_change(lambda info: asyncio.ensure_future(_on_track_change(info)))
+            asyncio.create_task(monitor.start(_active_playlist_id))
 
     # Start duplicate watcher in background
     global _on_duplicate_notify

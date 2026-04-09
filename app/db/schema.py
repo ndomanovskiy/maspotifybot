@@ -112,6 +112,16 @@ MIGRATIONS = [
     "ALTER TABLE playlist_tracks ADD COLUMN IF NOT EXISTS genre TEXT",
     # v3: easter eggs
     "ALTER TABLE session_participants ADD COLUMN IF NOT EXISTS secret_note TEXT",
+    # v4: session state persistence
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS current_track_id INTEGER",
+    """CREATE TABLE IF NOT EXISTS track_messages (
+        id SERIAL PRIMARY KEY,
+        session_track_id INTEGER REFERENCES session_tracks(id) ON DELETE CASCADE,
+        chat_id BIGINT NOT NULL,
+        message_id INTEGER NOT NULL,
+        caption TEXT NOT NULL DEFAULT '',
+        UNIQUE (session_track_id, chat_id)
+    )""",
     """CREATE TABLE IF NOT EXISTS action_log (
         id SERIAL PRIMARY KEY,
         action TEXT NOT NULL,
