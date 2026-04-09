@@ -42,7 +42,7 @@ _cached_pre_recap: str | None = None
 _skip_in_progress: set[int] = set()  # session_track_ids currently being skipped (race condition guard)
 _session_message: tuple[int, int] | None = None  # (chat_id, message_id) of session creation message
 _waiting_secret_clarification: dict[int, dict] = {}  # telegram_id -> {session_id, secret}
-_session_listening_complete: bool = False
+_session_end_prompted: bool = False
 
 
 def is_admin(telegram_id: int) -> bool:
@@ -1175,13 +1175,6 @@ async def on_start_listening(callback: CallbackQuery):
             except Exception:
                 pass
 
-    async def _on_listening_end():
-        global _session_listening_complete
-        _session_listening_complete = True
-        log.info("Playlist playback ended — listening complete")
-        await _check_session_complete()
-
-    monitor.on_end(_on_listening_end)
     asyncio.create_task(monitor.start(_active_playlist_id))
 
 
@@ -1198,7 +1191,7 @@ async def cmd_end(message: Message):
 
 
 async def _end_session():
-    global _active_session_id, _active_playlist_id, _current_session_track_id, _played_track_ids, _cached_pre_recap, _session_message, _session_listening_complete
+    global _active_session_id, _active_playlist_id, _current_session_track_id, _played_track_ids, _cached_pre_recap, _session_message, _session_end_prompted
 
     if _active_session_id is None:
         return
@@ -1306,7 +1299,7 @@ async def _end_session():
     _cached_pre_recap = None
     _skip_in_progress.clear()
     _session_message = None
-    _session_listening_complete = False
+    _session_end_prompted = False
 
 
 async def _on_track_change(info: TrackInfo):
@@ -1512,11 +1505,13 @@ async def _finalize_track_card(session_track_id: int, result_text: str):
 
 async def _check_session_complete():
     """Check if all tracks in session have been voted on — suggest ending."""
+    global _session_end_prompted
+
     if _active_session_id is None:
         return
 
-    if not _session_listening_complete:
-        return  # Don't prompt until playlist playback has ended
+    if _session_end_prompted:
+        return  # Already asked, don't spam
 
     async with _pool.acquire() as conn:
         pending = await conn.fetchval(
@@ -1525,13 +1520,22 @@ async def _check_session_complete():
         )
 
     if pending == 0:
+        # Pause playback — all tracks voted
+        try:
+            sp = await get_spotify()
+            await sp.playback_pause()
+            log.info("Paused playback — all tracks voted")
+        except Exception as e:
+            log.warning(f"Failed to pause playback: {e}")
+
+        _session_end_prompted = True
         end_kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🏁 Завершить сессию", callback_data="confirm_end"),
             InlineKeyboardButton(text="▶️ Продолжить", callback_data="continue_session"),
         ]])
         await bot.send_message(
             settings.telegram_admin_id,
-            "🎵 <b>Все треки прослушаны и оценены!</b>\n\nЗавершить сессию?",
+            "⏸ <b>Все треки оценены!</b> Плейлист на паузе.\n\nЗавершить сессию?",
             reply_markup=end_kb,
             parse_mode="HTML",
         )
@@ -1552,6 +1556,8 @@ async def on_continue_session(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Только ведущий!")
         return
+    global _session_end_prompted
+    _session_end_prompted = False
     await callback.answer("▶️ Продолжаем!")
     await callback.message.edit_text("▶️ Продолжаем прослушивание!", parse_mode="HTML")
 
