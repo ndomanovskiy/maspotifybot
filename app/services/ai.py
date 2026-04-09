@@ -25,7 +25,7 @@ def _get_anthropic() -> anthropic.AsyncAnthropic:
     return _anthropic_client
 
 
-def _get_openai() -> AsyncOpenAI:
+def get_openai() -> AsyncOpenAI:
     global _openai_client
     if _openai_client is None:
         _openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
