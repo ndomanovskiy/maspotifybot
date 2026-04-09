@@ -59,17 +59,12 @@ async def cmd_start(message: Message):
     if is_admin(message.from_user.id):
         msg += (
             "\n\n🔧 <b>Админ:</b>\n"
-            "/session start — начать сессию\n"
-            "/session end — завершить сессию\n"
-            "/session kick <code>@user</code> — кикнуть\n"
+            "/session start | end | kick <code>@user</code>\n"
+            "/playlist create | close | status | link | reschedule\n"
             "/distribute <code>номер</code> — раскидать по жанрам\n"
             "/recap <code>номер</code> — рекап сессии\n"
-            "/close_playlist <code>номер</code> — закрыть плейлист\n"
-            "/create_next <code>[тема]</code> — создать плейлист\n"
-            "/setnextlink <code>url</code> — invite-ссылка\n"
-            "/reschedule <code>ДД/ММ/ГГГГ</code> — перенести дату\n"
             "/preview <code>spotify_url</code> — превью карточки\n"
-            "/health — статус плейлиста\n"
+            "/health — здоровье бота\n"
             "/backfill_genres — заполнить жанры\n"
             "/dbinfo — инфо о базе\n"
             "/import_all — импорт плейлистов\n"
@@ -131,33 +126,6 @@ async def cmd_next(message: Message):
     else:
         await message.answer("Нет предстоящих плейлистов в базе.")
 
-
-# ── /setnextlink ────────────────────────────────────────────────
-
-@router.message(Command("setnextlink"))
-async def cmd_setnextlink(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2 or "spotify.com/playlist" not in args[1]:
-        await reply(
-            message,
-            "Скинь invite-ссылку на плейлист:\n<code>/setnextlink https://open.spotify.com/playlist/...?pt=...</code>",
-        )
-        return
-
-    invite_url = args[1].strip()
-    async with get_pool().acquire() as conn:
-        updated = await conn.fetchval(
-            "UPDATE playlists SET invite_url = $1 WHERE status = 'upcoming' RETURNING name",
-            invite_url,
-        )
-
-    if updated:
-        await reply(message, f"✅ Invite-ссылка сохранена для <b>{updated}</b>")
-    else:
-        await message.answer("❌ Нет upcoming плейлиста в базе.")
 
 
 # ── /get ────────────────────────────────────────────────────────

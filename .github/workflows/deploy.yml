@@ -12,14 +12,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Notify tests started
-        env:
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
-        run: |
-          FIRST_LINE=$(echo "$COMMIT_MSG" | head -n1)
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
-            --data-urlencode "chat_id=${{ secrets.ADMIN_ID }}" \
-            --data-urlencode "text=🧪 CI: тесты запущены — $FIRST_LINE"
       - name: Install dependencies
         run: pip install .[dev]
       - name: Run tests
@@ -29,11 +21,6 @@ jobs:
           SPOTIFY_CLIENT_ID: "test"
           SPOTIFY_CLIENT_SECRET: "test"
         run: pytest tests/ -v
-      - name: Notify tests passed
-        run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
-            -d chat_id=${{ secrets.ADMIN_ID }} \
-            -d text="✅ CI: тесты прошли"
       - name: Notify tests failed
         if: failure()
         run: |
@@ -45,15 +32,6 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - name: Notify deploy started
-        env:
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
-        run: |
-          FIRST_LINE=$(echo "$COMMIT_MSG" | head -n1)
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
-            --data-urlencode "chat_id=${{ secrets.ADMIN_ID }}" \
-            --data-urlencode "text=🚀 Деплой начался — $FIRST_LINE"
-
       - name: Deploy to server
         uses: appleboy/ssh-action@v1
         with:
@@ -65,14 +43,9 @@ jobs:
             git pull origin main
             docker compose up -d --build --remove-orphans
 
-      - name: Notify deploy finished
-        if: always()
+      - name: Notify deploy failed
+        if: failure()
         run: |
-          if [ "${{ job.status }}" = "success" ]; then
-            TEXT="✅ Деплой завершён"
-          else
-            TEXT="❌ Деплой упал"
-          fi
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
-            -d chat_id=${{ secrets.ADMIN_ID }} \
-            -d text="$TEXT"
+            --data-urlencode "chat_id=${{ secrets.ADMIN_ID }}" \
+            --data-urlencode "text=❌ Деплой упал — проверь сервер"

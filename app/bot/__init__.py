@@ -91,11 +91,10 @@ async def setup_bot(pool):
 
     admin_commands = user_commands + [
         BotCommand(command="session", description="start / end / kick @user"),
+        BotCommand(command="playlist", description="create / close / status / link / reschedule"),
         BotCommand(command="distribute", description="Раскидать треки по жанрам"),
         BotCommand(command="recap", description="Рекап сессии"),
-        BotCommand(command="close_playlist", description="Закрыть плейлист"),
-        BotCommand(command="create_next", description="Создать следующий плейлист"),
-        BotCommand(command="health", description="Статус плейлиста"),
+        BotCommand(command="health", description="Здоровье бота"),
         BotCommand(command="preview", description="Превью карточки трека"),
         BotCommand(command="dbinfo", description="Инфо о базе"),
     ]

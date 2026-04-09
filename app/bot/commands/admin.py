@@ -270,30 +270,6 @@ async def cmd_preview(message: Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 
-# ── /reschedule ─────────────────────────────────────────────────
-
-@router.message(Command("reschedule"))
-@require_admin
-async def cmd_reschedule(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Укажи новую дату: /reschedule 09/04/2026")
-        return
-
-    new_date = args[1].strip()
-    if not re.match(r"\d{2}/\d{2}/\d{4}", new_date):
-        await message.answer("Формат даты: ДД/ММ/ГГГГ")
-        return
-
-    result = await reschedule_playlist(get_pool(), new_date)
-    if result:
-        await reply(
-            message,
-            f"📅 Перенесено:\n<s>{result['old_name']}</s>\n→ <b>{result['new_name']}</b>",
-        )
-    else:
-        await message.answer("Нет предстоящих плейлистов для переноса.")
-
 
 # ── /scan ───────────────────────────────────────────────────────
 
@@ -439,49 +415,138 @@ async def on_recap(message: Message):
     await session.send_recap_carousel(message.chat.id, recap_text, num)
 
 
-# ── /close_playlist ─────────────────────────────────────────────
+# ── /playlist (create, close, status, link, reschedule) ────────
 
-@router.message(Command("close_playlist"))
+@router.message(Command("playlist"))
 @require_admin
-async def on_close_playlist(message: Message):
-    num = parse_turdom_number(message.text)
-    if num is None:
-        await message.answer("Укажи номер: /close_playlist 91")
-        return
+async def cmd_playlist(message: Message):
+    args = message.text.split(maxsplit=2)
+    sub = args[1].strip().lower() if len(args) > 1 else ""
+    rest = args[2].strip() if len(args) > 2 else ""
 
-    result = await cmd_close_playlist(get_pool(), num, triggered_by=message.from_user.id)
-    await reply(message, result["message"])
+    if sub == "create":
+        theme = rest or None
+        result = await cmd_create_next(get_pool(), theme=theme, triggered_by=message.from_user.id)
 
+        if result["status"] == "blocked":
+            await reply(message, result["message"])
+            return
 
-# ── /create_next ────────────────────────────────────────────────
-
-@router.message(Command("create_next"))
-@require_admin
-async def on_create_next(message: Message):
-    args = message.text.split(maxsplit=1)
-    theme = args[1].strip() if len(args) > 1 else None
-
-    result = await cmd_create_next(get_pool(), theme=theme, triggered_by=message.from_user.id)
-
-    if result["status"] == "blocked":
         await reply(message, result["message"])
+
+        for tid in result.get("notify_ids", []):
+            if tid != message.from_user.id:
+                try:
+                    pl = result["playlist"]
+                    await send(tid, f"🆕 <b>Новый плейлист:</b> {pl['name']}\n\nДобавляйте треки!\n{pl['url']}")
+                except Exception as e:
+                    log.debug(f"Failed to notify {tid}: {e}")
+
+    elif sub == "close":
+        if not rest or not rest.isdigit():
+            await message.answer("Укажи номер: /playlist close 91")
+            return
+        result = await cmd_close_playlist(get_pool(), int(rest), triggered_by=message.from_user.id)
+        await reply(message, result["message"])
+
+    elif sub == "status":
+        await _playlist_status(message)
+
+    elif sub == "link":
+        if not rest or "spotify.com/playlist" not in rest:
+            await reply(message, "Скинь invite-ссылку:\n<code>/playlist link https://open.spotify.com/playlist/...?pt=...</code>")
+            return
+        async with get_pool().acquire() as conn:
+            updated = await conn.fetchval(
+                "UPDATE playlists SET invite_url = $1 WHERE status = 'upcoming' RETURNING name",
+                rest,
+            )
+        if updated:
+            await reply(message, f"✅ Invite-ссылка сохранена для <b>{updated}</b>")
+        else:
+            await message.answer("❌ Нет upcoming плейлиста в базе.")
+
+    elif sub == "reschedule":
+        if not rest or not re.match(r"\d{2}/\d{2}/\d{4}", rest):
+            await message.answer("Формат: /playlist reschedule ДД/ММ/ГГГГ")
+            return
+        result = await reschedule_playlist(get_pool(), rest)
+        if result:
+            await reply(message, f"📅 Перенесено:\n<s>{result['old_name']}</s>\n→ <b>{result['new_name']}</b>")
+        else:
+            await message.answer("Нет предстоящих плейлистов для переноса.")
+
+    else:
+        await reply(
+            message,
+            "📋 <b>Команды плейлистов:</b>\n\n"
+            "/playlist create <code>[тема]</code> — создать следующий\n"
+            "/playlist close <code>номер</code> — закрыть плейлист\n"
+            "/playlist status — статус плейлиста\n"
+            "/playlist link <code>url</code> — invite-ссылка\n"
+            "/playlist reschedule <code>ДД/ММ/ГГГГ</code> — перенести дату",
+        )
+
+
+async def _playlist_status(message: Message):
+    """Show playlist readiness: tracks, facts, genres."""
+    async with get_pool().acquire() as conn:
+        pl = await conn.fetchrow(
+            "SELECT id, name, number FROM playlists WHERE status IN ('active', 'upcoming') ORDER BY number DESC LIMIT 1"
+        )
+
+    if not pl:
+        await message.answer("Нет active/upcoming плейлиста.")
         return
 
-    await reply(message, result["message"])
+    async with get_pool().acquire() as conn:
+        stats = await conn.fetchrow("""
+            SELECT COUNT(*) as total,
+                   COUNT(*) FILTER (WHERE ai_facts IS NOT NULL) as with_facts,
+                   COUNT(*) FILTER (WHERE ai_facts IS NULL) as no_facts,
+                   COUNT(*) FILTER (WHERE genre IS NOT NULL AND genre != 'unknown') as with_genre,
+                   COUNT(*) FILTER (WHERE genre IS NULL OR genre = 'unknown') as no_genre
+            FROM playlist_tracks WHERE playlist_id = $1
+        """, pl["id"])
 
-    for tid in result.get("notify_ids", []):
-        if tid != message.from_user.id:
-            try:
-                pl = result["playlist"]
-                await send(
-                    tid,
-                    f"🆕 <b>Новый плейлист:</b> {pl['name']}\n\nДобавляйте треки!\n{pl['url']}",
-                )
-            except Exception as e:
-                log.debug(f"Failed to notify {tid}: {e}")
+        no_genre_tracks = await conn.fetch("""
+            SELECT title, artist FROM playlist_tracks
+            WHERE playlist_id = $1 AND (genre IS NULL OR genre = 'unknown')
+            ORDER BY title
+        """, pl["id"])
+
+        no_facts_tracks = await conn.fetch("""
+            SELECT title, artist FROM playlist_tracks
+            WHERE playlist_id = $1 AND ai_facts IS NULL
+            ORDER BY title
+        """, pl["id"])
+
+    lines = [f"📋 <b>{pl['name']}</b>\n"]
+    lines.append(f"🎵 Треков: {stats['total']}")
+    lines.append(f"💡 Факты: {stats['with_facts']}/{stats['total']}")
+    lines.append(f"🎸 Жанры: {stats['with_genre']}/{stats['total']}")
+
+    if stats["no_facts"] > 0:
+        lines.append(f"\n❌ <b>Без фактов ({stats['no_facts']}):</b>")
+        for t in no_facts_tracks[:10]:
+            lines.append(f"   • {t['title']} — {t['artist']}")
+        if stats["no_facts"] > 10:
+            lines.append(f"   ...и ещё {stats['no_facts'] - 10}")
+
+    if stats["no_genre"] > 0:
+        lines.append(f"\n❌ <b>Без жанра ({stats['no_genre']}):</b>")
+        for t in no_genre_tracks[:10]:
+            lines.append(f"   • {t['title']} — {t['artist']}")
+        if stats["no_genre"] > 10:
+            lines.append(f"   ...и ещё {stats['no_genre'] - 10}")
+
+    if stats["no_facts"] == 0 and stats["no_genre"] == 0:
+        lines.append(f"\n✅ Всё готово к сессии!")
+
+    await reply(message, "\n".join(lines))
 
 
-# ── /health ─────────────────────────────────────────────────────
+# ── /health — bot health only ──────────────────────────────────
 
 @router.message(Command("health"))
 @require_admin
@@ -491,94 +556,41 @@ async def on_health(message: Message):
 
     lines = ["🩺 <b>Health Check</b>\n"]
 
-    # --- Bot status ---
+    # Uptime
     uptime_sec = int(time.time() - _bot_start_time)
     hours, remainder = divmod(uptime_sec, 3600)
     minutes, secs = divmod(remainder, 60)
     uptime_str = f"{hours}h {minutes}m" if hours else f"{minutes}m {secs}s"
     lines.append(f"🤖 Uptime: <b>{uptime_str}</b>")
 
-    # --- Session status ---
+    # Session
     if session.active_session_id:
         lines.append(
             f"🎧 Сессия #{session.active_session_id}: "
-            f"{len(session.participants)} участников, "
+            f"{len(session.participants)} уч., "
             f"{len(session.played_track_ids)} треков"
         )
     else:
         lines.append("💤 Нет активной сессии")
 
-    # --- Spotify ---
+    # Spotify
     try:
         sp = await get_spotify()
         playback = await sp.playback()
         if playback and playback.is_playing:
             lines.append("🟢 Spotify: играет")
         else:
-            lines.append("⏸ Spotify: пауза/не играет")
+            lines.append("⏸ Spotify: пауза")
     except Exception:
         lines.append("🔴 Spotify: недоступен")
 
-    # --- DB ---
+    # DB
     try:
         async with get_pool().acquire() as conn:
-            db_ok = await conn.fetchval("SELECT 1")
+            await conn.fetchval("SELECT 1")
         lines.append("🟢 PostgreSQL: ок")
     except Exception:
         lines.append("🔴 PostgreSQL: недоступен")
-
-    # --- Playlist health ---
-    async with get_pool().acquire() as conn:
-        pl = await conn.fetchrow(
-            "SELECT id, name, number FROM playlists WHERE status IN ('active', 'upcoming') ORDER BY number DESC LIMIT 1"
-        )
-
-    if pl:
-        async with get_pool().acquire() as conn:
-            stats = await conn.fetchrow("""
-                SELECT COUNT(*) as total,
-                       COUNT(*) FILTER (WHERE ai_facts IS NOT NULL) as with_facts,
-                       COUNT(*) FILTER (WHERE ai_facts IS NULL) as no_facts,
-                       COUNT(*) FILTER (WHERE genre IS NOT NULL AND genre != 'unknown') as with_genre,
-                       COUNT(*) FILTER (WHERE genre IS NULL OR genre = 'unknown') as no_genre
-                FROM playlist_tracks WHERE playlist_id = $1
-            """, pl["id"])
-
-            no_genre_tracks = await conn.fetch("""
-                SELECT title, artist FROM playlist_tracks
-                WHERE playlist_id = $1 AND (genre IS NULL OR genre = 'unknown')
-                ORDER BY title
-            """, pl["id"])
-
-            no_facts_tracks = await conn.fetch("""
-                SELECT title, artist FROM playlist_tracks
-                WHERE playlist_id = $1 AND ai_facts IS NULL
-                ORDER BY title
-            """, pl["id"])
-
-        lines.append(f"\n📋 <b>{pl['name']}</b>")
-        lines.append(f"🎵 Треков: {stats['total']}")
-        lines.append(f"💡 Факты: {stats['with_facts']}/{stats['total']}")
-        lines.append(f"🎸 Жанры: {stats['with_genre']}/{stats['total']}")
-
-        if stats["no_facts"] > 0:
-            lines.append(f"\n❌ <b>Без фактов ({stats['no_facts']}):</b>")
-            for t in no_facts_tracks[:10]:
-                lines.append(f"   • {t['title']} — {t['artist']}")
-            if stats["no_facts"] > 10:
-                lines.append(f"   ...и ещё {stats['no_facts'] - 10}")
-
-        if stats["no_genre"] > 0:
-            lines.append(f"\n❌ <b>Без жанра ({stats['no_genre']}):</b>")
-            for t in no_genre_tracks[:10]:
-                lines.append(f"   • {t['title']} — {t['artist']}")
-            if stats["no_genre"] > 10:
-                lines.append(f"   ...и ещё {stats['no_genre'] - 10}")
-
-        if stats["no_facts"] == 0 and stats["no_genre"] == 0:
-            lines.append(f"\n✅ Всё готово к сессии!")
-    else:
-        lines.append("\n📋 Нет active/upcoming плейлиста")
 
     await reply(message, "\n".join(lines))
 
