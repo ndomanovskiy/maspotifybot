@@ -81,11 +81,22 @@ class SpotifyMonitor:
             log.warning(f"Monitor: Spotify API error (will retry): {e}")
             return
 
-        if playback is None or playback.item is None:
-            return
+        if playback is None or playback.item is None or not playback.is_playing:
+            self._not_playing_count += 1
+            # After 5 consecutive polls with no playback (~20 sec), signal end
+            if self._not_playing_count >= 5 and self._current_track_id is not None:
+                log.info("Playlist playback ended (no activity for 20s)")
+                if self._on_end:
+                    await self._on_end()
+                    self._on_end = None  # fire only once
+            if playback is None or playback.item is None:
+                return
 
         track = playback.item
         is_playing = playback.is_playing
+
+        if is_playing:
+            self._not_playing_count = 0
 
         # Check if 30% of track played — suggest skip if not yet suggested
         if (

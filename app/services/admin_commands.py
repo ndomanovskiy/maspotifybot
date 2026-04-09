@@ -499,10 +499,13 @@ async def cmd_close_playlist(pool: asyncpg.Pool, turdom_number: int, triggered_b
 
     # Update playlist name with actual date
     old_name = info["playlist_name"]
-    new_name = re.sub(r"\d{2}/\d{2}/\d{4}", date_str, old_name)
-    if new_name == old_name:
-        # No date in name, append it
-        new_name = f"{old_name} {date_str}"
+    if date_str in old_name:
+        new_name = old_name  # Date already correct
+    else:
+        new_name = re.sub(r"\d{2}/\d{2}/\d{4}", date_str, old_name)
+        if new_name == old_name:
+            # No date in name, append it
+            new_name = f"{old_name} {date_str}"
 
     async with pool.acquire() as conn:
         await conn.execute(
