@@ -130,8 +130,45 @@ async def setup_bot(pool):
             except Exception as e:
                 log.debug(f"Failed to notify {settings.telegram_admin_id}: {e}")
 
+    async def on_fuzzy_duplicate_confirm(telegram_id, track_title, artist, duplicates, playlist_name, track_id, playlist_spotify_id):
+        """Ask user to confirm fuzzy duplicate — show buttons."""
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+        match_labels = {
+            "fuzzy_exact": "🔍 нормализованное совпадение",
+            "fuzzy_contains": "🔍 слова совпадают",
+            "fuzzy_levenshtein": "🔍 похожее название",
+        }
+        dup_links = []
+        for d in duplicates:
+            label = match_labels.get(d["match"], "🔍 похож")
+            dup_links.append(f"  {label} — <a href=\"{d['url']}\">{d['playlist']}</a>\n  {d['title']} — {d['artist']}")
+        dup_text = "\n".join(dup_links)
+
+        track_fmt = format_track(track_title, artist, track_id)
+        track_url = f"https://open.spotify.com/track/{track_id}" if track_id else ""
+
+        msg = (
+            f"🔍 <b>Возможный дубликат</b>\n\n"
+            f"🎵 {track_fmt}\nв <b>{playlist_name}</b>\n\n"
+            f"Похож на:\n{dup_text}\n\n"
+            f"Удалить трек из плейлиста?"
+        )
+
+        # Encode callback data: confirm_dup:<playlist_spotify_id>:<track_id>
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"confirm_dup:{playlist_spotify_id}:{track_id}"),
+            InlineKeyboardButton(text="✅ Оставить", callback_data=f"keep_dup:{track_id}"),
+        ]])
+
+        target = telegram_id or settings.telegram_admin_id
+        try:
+            await send(target, msg, reply_markup=kb)
+        except Exception as e:
+            log.debug(f"Failed to send fuzzy confirm to {target}: {e}")
+
     set_duplicate_notify(on_duplicate_found)
-    watcher = DuplicateWatcher(pool, on_duplicate_found)
+    watcher = DuplicateWatcher(pool, on_duplicate_found, confirm_callback=on_fuzzy_duplicate_confirm)
     asyncio.create_task(watcher.start())
 
     init_health()

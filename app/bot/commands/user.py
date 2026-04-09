@@ -199,15 +199,33 @@ async def cmd_check(message: Message):
 
     await message.answer("🔍 Проверяю...")
 
+    # Fetch track info for fuzzy matching
+    title, artist = None, None
+    try:
+        from app.spotify.auth import get_spotify
+        sp = await get_spotify()
+        track = await sp.track(track_id)
+        title = track.name
+        artist = ", ".join(a.name for a in track.artists)
+    except Exception:
+        pass
+
     isrc = await get_track_isrc(track_id)
-    duplicates = await check_duplicate(get_pool(), track_id, isrc)
+    duplicates = await check_duplicate(get_pool(), track_id, isrc, title=title, artist=artist)
 
     if duplicates:
+        match_labels = {
+            "exact": "🎯 точное совпадение",
+            "isrc": "🔗 тот же трек (другой альбом)",
+            "fuzzy_exact": "🔍 совпадение после нормализации",
+            "fuzzy_contains": "🔍 название содержится",
+            "fuzzy_levenshtein": "🔍 похожее название",
+        }
         lines = []
         for d in duplicates:
-            match_type = "🎯 точное совпадение" if d["match"] == "exact" else "🔗 тот же трек (другой альбом)"
+            label = match_labels.get(d["match"], d["match"])
             track_display = format_track(d["title"], d["artist"])
-            lines.append(f"• {track_display}\n  {match_type} в {d['playlist']}\n  {d['url']}")
+            lines.append(f"• {track_display}\n  {label} в {d['playlist']}\n  {d['url']}")
         await reply(
             message,
             f"⚠️ <b>Дубликат найден!</b>\n\n" + "\n\n".join(lines),

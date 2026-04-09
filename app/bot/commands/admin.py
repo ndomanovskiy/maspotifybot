@@ -302,7 +302,10 @@ async def cmd_scan(message: Message):
                 if not isrc:
                     isrc = await get_track_isrc(track.id)
 
-                duplicates = await check_duplicate(get_pool(), track.id, isrc)
+                duplicates = await check_duplicate(
+                    get_pool(), track.id, isrc,
+                    title=track.name, artist=", ".join(a.name for a in track.artists),
+                )
                 duplicates = [d for d in duplicates if d["playlist"] != pl["name"]]
 
                 if duplicates:
@@ -629,6 +632,34 @@ async def on_backfill_genres(message: Message):
         )
     except Exception as e:
         log.error(f"Genre backfill failed: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+# ── /backfill_normalized ────────────────────────────────────────
+
+@router.message(Command("backfill_normalized"))
+@require_admin
+async def on_backfill_normalized(message: Message):
+    """Backfill normalized_title and normalized_artist for all tracks."""
+    from app.services.normalize import normalize_title, normalize_artist
+
+    await message.answer("⏳ Запускаю нормализацию...")
+    try:
+        async with get_pool().acquire() as conn:
+            tracks = await conn.fetch(
+                "SELECT id, title, artist FROM playlist_tracks WHERE normalized_title IS NULL OR normalized_artist IS NULL"
+            )
+            updated = 0
+            for t in tracks:
+                await conn.execute(
+                    "UPDATE playlist_tracks SET normalized_title = $1, normalized_artist = $2 WHERE id = $3",
+                    normalize_title(t["title"]), normalize_artist(t["artist"]), t["id"],
+                )
+                updated += 1
+
+        await reply(message, f"✅ Нормализовано <b>{updated}</b> треков из {len(tracks)}")
+    except Exception as e:
+        log.error(f"Normalized backfill failed: {e}")
         await message.answer(f"❌ Ошибка: {e}")
 
 
