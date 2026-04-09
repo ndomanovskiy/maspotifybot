@@ -172,8 +172,12 @@ class DuplicateWatcher:
                     self._pool, track.id, isrc,
                     title=track.name, artist=track_artist,
                 )
-                # Filter out current playlist from results
-                duplicates = [d for d in duplicates if d["playlist"] != pl["name"]]
+                # Filter: exact/isrc self-matches from same playlist (track finds itself),
+                # but keep fuzzy matches within same playlist (different track, same playlist)
+                duplicates = [
+                    d for d in duplicates
+                    if d.get("playlist_id") != pl["id"] or d["match"].startswith("fuzzy_")
+                ]
 
                 if duplicates:
                     # Check if current playlist is thematic

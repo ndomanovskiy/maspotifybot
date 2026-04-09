@@ -13,7 +13,7 @@ from app.services.track_formatter import format_track
 from app.bot.core import bot, dp, set_pool, is_admin, send, reply
 from app.bot.session_manager import session
 from app.bot.commands.user import router as user_router
-from app.bot.commands.admin import router as admin_router, set_duplicate_notify, init_health
+from app.bot.commands.admin import router as admin_router, set_duplicate_notify, set_fuzzy_confirm, init_health
 from app.bot.callbacks import router as callbacks_router
 
 log = logging.getLogger(__name__)
@@ -168,6 +168,7 @@ async def setup_bot(pool):
             log.debug(f"Failed to send fuzzy confirm to {target}: {e}")
 
     set_duplicate_notify(on_duplicate_found)
+    set_fuzzy_confirm(on_fuzzy_duplicate_confirm)
     watcher = DuplicateWatcher(pool, on_duplicate_found, confirm_callback=on_fuzzy_duplicate_confirm)
     asyncio.create_task(watcher.start())
 

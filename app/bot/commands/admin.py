@@ -288,7 +288,8 @@ async def cmd_scan(message: Message):
             return
 
         sp = await get_spotify()
-        found_count = 0
+        removed_count = 0
+        suspicious_count = 0
 
         for pl in playlists:
             items = await sp.playlist_items(pl["spotify_id"], limit=100)
@@ -306,10 +307,30 @@ async def cmd_scan(message: Message):
                     get_pool(), track.id, isrc,
                     title=track.name, artist=", ".join(a.name for a in track.artists),
                 )
-                duplicates = [d for d in duplicates if d["playlist"] != pl["name"]]
+                duplicates = [
+                    d for d in duplicates
+                    if d.get("playlist_id") != pl["id"] or d["match"].startswith("fuzzy_")
+                ]
 
                 if duplicates:
-                    found_count += 1
+                    # Exact/ISRC → auto-remove, fuzzy → just report
+                    has_exact = any(d["match"] in ("exact", "isrc") for d in duplicates)
+                    fuzzy_only = [d for d in duplicates if d["match"].startswith("fuzzy_")]
+                    if not has_exact:
+                        # Fuzzy only — ask user to confirm
+                        if fuzzy_only and _on_fuzzy_confirm:
+                            suspicious_count += 1
+                            await _on_fuzzy_confirm(
+                                telegram_id=None,
+                                track_title=track.name,
+                                artist=", ".join(a.name for a in track.artists),
+                                duplicates=fuzzy_only,
+                                playlist_name=pl["name"],
+                                track_id=track.id,
+                                playlist_spotify_id=pl["spotify_id"],
+                            )
+                        continue
+                    removed_count += 1
                     await sp.playlist_remove(pl["spotify_id"], [f"spotify:track:{track.id}"])
                     async with get_pool().acquire() as conn:
                         await conn.execute(
@@ -326,7 +347,14 @@ async def cmd_scan(message: Message):
                             track_id=track.id,
                         )
 
-        await message.answer(f"✅ Сканирование завершено! Дубликатов найдено и удалено: {found_count}")
+        parts = [f"✅ Сканирование завершено!"]
+        if removed_count:
+            parts.append(f"🗑 Удалено: {removed_count}")
+        if suspicious_count:
+            parts.append(f"🔍 На подтверждение: {suspicious_count}")
+        if not removed_count and not suspicious_count:
+            parts.append("Дубликатов не найдено")
+        await message.answer(" ".join(parts))
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -666,8 +694,14 @@ async def on_backfill_normalized(message: Message):
 # ── Duplicate notification helper (set in setup_bot) ───────────
 
 _on_duplicate_notify = None
+_on_fuzzy_confirm = None
 
 
 def set_duplicate_notify(fn):
     global _on_duplicate_notify
     _on_duplicate_notify = fn
+
+
+def set_fuzzy_confirm(fn):
+    global _on_fuzzy_confirm
+    _on_fuzzy_confirm = fn

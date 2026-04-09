@@ -344,7 +344,7 @@ class TestCheckPlaylistsDuplicates:
         item = make_item(track)
 
         mock_dup.return_value = [
-            {"match": "exact", "title": "Song", "artist": "A", "playlist": "PL1", "url": "..."}
+            {"match": "exact", "title": "Song", "artist": "A", "playlist": "PL1", "playlist_id": 1, "url": "..."}
         ]
 
         sp = AsyncMock()

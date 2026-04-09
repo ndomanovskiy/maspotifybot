@@ -123,7 +123,8 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
         # 1. Exact Track ID match
         rows = await conn.fetch(
             """
-            SELECT pt.spotify_track_id, pt.title, pt.artist, p.name as playlist_name, p.url as playlist_url
+            SELECT pt.spotify_track_id, pt.title, pt.artist,
+                   p.id as playlist_id, p.name as playlist_name, p.url as playlist_url
             FROM playlist_tracks pt JOIN playlists p ON pt.playlist_id = p.id
             WHERE pt.spotify_track_id = $1
             """,
@@ -131,13 +132,15 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
         )
         for r in rows:
             duplicates.append({"match": "exact", "title": r["title"], "artist": r["artist"],
-                               "playlist": r["playlist_name"], "url": r["playlist_url"]})
+                               "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
+                               "url": r["playlist_url"]})
 
         # 2. ISRC match (same song, different album)
         if isrc and not duplicates:
             rows = await conn.fetch(
                 """
-                SELECT pt.spotify_track_id, pt.title, pt.artist, p.name as playlist_name, p.url as playlist_url
+                SELECT pt.spotify_track_id, pt.title, pt.artist,
+                       p.id as playlist_id, p.name as playlist_name, p.url as playlist_url
                 FROM playlist_tracks pt JOIN playlists p ON pt.playlist_id = p.id
                 WHERE pt.isrc = $1 AND pt.spotify_track_id != $2
                 """,
@@ -145,7 +148,8 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
             )
             for r in rows:
                 duplicates.append({"match": "isrc", "title": r["title"], "artist": r["artist"],
-                                   "playlist": r["playlist_name"], "url": r["playlist_url"]})
+                                   "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
+                                   "url": r["playlist_url"]})
 
         # 3. Fuzzy match (normalized title + artist)
         if not duplicates and title and artist:
@@ -157,7 +161,7 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
                 """
                 SELECT pt.spotify_track_id, pt.title, pt.artist,
                        pt.normalized_title, pt.normalized_artist,
-                       p.name as playlist_name, p.url as playlist_url
+                       p.id as playlist_id, p.name as playlist_name, p.url as playlist_url
                 FROM playlist_tracks pt JOIN playlists p ON pt.playlist_id = p.id
                 WHERE pt.normalized_artist = $1 AND pt.spotify_track_id != $2
                 """,
@@ -171,7 +175,8 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
                     duplicates.append({
                         "match": match_type,
                         "title": r["title"], "artist": r["artist"],
-                        "playlist": r["playlist_name"], "url": r["playlist_url"],
+                        "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
+                        "url": r["playlist_url"],
                     })
 
     return duplicates
