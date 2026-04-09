@@ -302,7 +302,10 @@ async def cmd_scan(message: Message):
                 if not isrc:
                     isrc = await get_track_isrc(track.id)
 
-                duplicates = await check_duplicate(get_pool(), track.id, isrc)
+                duplicates = await check_duplicate(
+                    get_pool(), track.id, isrc,
+                    title=track.name, artist=", ".join(a.name for a in track.artists),
+                )
                 duplicates = [d for d in duplicates if d["playlist"] != pl["name"]]
 
                 if duplicates:

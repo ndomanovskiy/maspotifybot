@@ -427,6 +427,10 @@ async def on_rerecap(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("confirm_dup:"))
 async def on_confirm_dup(callback: CallbackQuery):
     """User confirmed fuzzy duplicate — remove from playlist."""
+    if not await is_registered(callback.from_user.id):
+        await callback.answer("⛔ Только для участников", show_alert=True)
+        return
+
     parts = callback.data.split(":")
     if len(parts) != 3:
         await callback.answer("Ошибка")
@@ -435,24 +439,34 @@ async def on_confirm_dup(callback: CallbackQuery):
     playlist_spotify_id = parts[1]
     track_id = parts[2]
 
+    # Guard against double-click
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     try:
         from app.spotify.auth import get_spotify
         sp = await get_spotify()
         await sp.playlist_remove(playlist_spotify_id, [f"spotify:track:{track_id}"])
 
-        # Remove from DB
+        # Remove from DB — scoped to this playlist only
         async with get_pool().acquire() as conn:
-            await conn.execute(
-                "DELETE FROM playlist_tracks WHERE spotify_track_id = $1",
-                track_id,
+            playlist_db_id = await conn.fetchval(
+                "SELECT id FROM playlists WHERE spotify_id = $1", playlist_spotify_id
             )
+            if playlist_db_id:
+                await conn.execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
+                    playlist_db_id, track_id,
+                )
 
         await callback.answer("🗑 Удалено!")
         await callback.message.edit_text(
             f"{callback.message.text}\n\n🗑 <b>Удалено</b>",
             parse_mode="HTML",
         )
-        log.info(f"Fuzzy duplicate confirmed and removed: {track_id}")
+        log.info(f"Fuzzy duplicate confirmed and removed: {track_id} from {playlist_spotify_id}")
     except Exception as e:
         log.error(f"Failed to remove fuzzy duplicate: {e}")
         await callback.answer(f"Ошибка: {e}", show_alert=True)

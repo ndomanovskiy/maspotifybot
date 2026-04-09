@@ -68,9 +68,10 @@ def normalize_artist(artist: str) -> str:
     result = artist.strip().lower()
     for pattern in _ARTIST_STRIP_PATTERNS:
         result = re.sub(pattern, " ", result, flags=re.IGNORECASE)
-    # Collapse whitespace
-    result = re.sub(r"\s+", " ", result).strip()
-    return result
+    # Collapse whitespace and sort words for order-independent matching
+    words = re.sub(r"\s+", " ", result).strip().split()
+    words.sort()
+    return " ".join(words)
 
 
 def title_words(normalized: str) -> set[str]:
@@ -97,7 +98,7 @@ def is_fuzzy_match(title_a: str, title_b: str, artist_a: str, artist_b: str) -> 
     words_b = title_words(title_b)
     if words_a and words_b:
         shorter, longer = (words_a, words_b) if len(words_a) <= len(words_b) else (words_b, words_a)
-        if shorter.issubset(longer) and len(shorter) >= 2:
+        if shorter.issubset(longer) and len(shorter) >= 2 and len(shorter) / len(longer) >= 0.5:
             return "fuzzy_contains"
 
     # Levenshtein distance for short titles
