@@ -121,11 +121,10 @@ class TestLastfmClient:
 
 class TestGenreResolutionChain:
 
-    @patch("app.services.genre_resolver._resolve_spotify", new_callable=AsyncMock, return_value=None)
     @patch("app.services.genre_resolver._resolve_ai", new_callable=AsyncMock, return_value=None)
     @patch("app.services.genre_resolver._resolve_lastfm", new_callable=AsyncMock, return_value="rock")
-    def test_lastfm_wins(self, mock_lastfm, mock_ai, mock_spotify):
-        """Last.fm result should be used, AI and Spotify not called."""
+    def test_lastfm_wins(self, mock_lastfm, mock_ai):
+        """Last.fm result should be used, AI not called."""
         from app.services.genre_resolver import resolve_genre
 
         track = MagicMock()
@@ -137,12 +136,10 @@ class TestGenreResolutionChain:
         result = run(resolve_genre(track))
         assert result == "rock"
         mock_ai.assert_not_called()
-        mock_spotify.assert_not_called()
 
-    @patch("app.services.genre_resolver._resolve_spotify", new_callable=AsyncMock, return_value=None)
     @patch("app.services.genre_resolver._resolve_ai", new_callable=AsyncMock, return_value="metal")
     @patch("app.services.genre_resolver._resolve_lastfm", new_callable=AsyncMock, return_value=None)
-    def test_ai_fallback(self, mock_lastfm, mock_ai, mock_spotify):
+    def test_ai_fallback(self, mock_lastfm, mock_ai):
         """If Last.fm fails, AI should be used."""
         from app.services.genre_resolver import resolve_genre
 
@@ -154,13 +151,11 @@ class TestGenreResolutionChain:
 
         result = run(resolve_genre(track))
         assert result == "metal"
-        mock_spotify.assert_not_called()
 
-    @patch("app.services.genre_resolver._resolve_spotify", new_callable=AsyncMock, return_value="indie rock, alternative")
     @patch("app.services.genre_resolver._resolve_ai", new_callable=AsyncMock, return_value=None)
     @patch("app.services.genre_resolver._resolve_lastfm", new_callable=AsyncMock, return_value=None)
-    def test_spotify_last_resort(self, mock_lastfm, mock_ai, mock_spotify):
-        """If Last.fm and AI both fail, Spotify artist genres used."""
+    def test_all_fail_returns_none(self, mock_lastfm, mock_ai):
+        """If Last.fm and AI both fail, return None (no Spotify fallback)."""
         from app.services.genre_resolver import resolve_genre
 
         track = MagicMock()
@@ -170,20 +165,4 @@ class TestGenreResolutionChain:
         track.artists = [artist_mock]
 
         result = run(resolve_genre(track))
-        assert result == "indie rock, alternative"
-
-    @patch("app.services.genre_resolver._resolve_spotify", new_callable=AsyncMock, return_value=None)
-    @patch("app.services.genre_resolver._resolve_ai", new_callable=AsyncMock, return_value=None)
-    @patch("app.services.genre_resolver._resolve_lastfm", new_callable=AsyncMock, return_value=None)
-    def test_all_fail_returns_unknown(self, mock_lastfm, mock_ai, mock_spotify):
-        """If everything fails, return 'unknown'."""
-        from app.services.genre_resolver import resolve_genre
-
-        track = MagicMock()
-        track.name = "Song"
-        artist_mock = MagicMock()
-        artist_mock.name = "Artist"
-        track.artists = [artist_mock]
-
-        result = run(resolve_genre(track))
-        assert result == "unknown"
+        assert result is None

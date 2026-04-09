@@ -1,9 +1,11 @@
-"""Resolve genre for a track via Last.fm tags, AI classification, or Spotify artist genres.
+"""Resolve genre for a track via Last.fm tags or AI classification.
 
 Priority chain:
 1. Last.fm track.getTopTags — most accurate (track-level, user-contributed)
 2. AI classification — GPT classifies by track name + artist into TURDOM genres
-3. Spotify artist genres — fallback (artist-level, often inaccurate for multi-genre artists)
+3. No fallback — returns None (admin handles manually)
+
+Spotify artist genres removed — too inaccurate for track-level classification.
 """
 import asyncio
 import logging
@@ -21,16 +23,16 @@ log = logging.getLogger(__name__)
 _GENRE_NAMES = [name.replace("TURDOM ", "") for name in GENRE_MAP.keys()]
 
 
-async def resolve_genre(track) -> str:
+async def resolve_genre(track) -> str | None:
     """Resolve genre string for a Spotify track object.
 
-    Tries: Last.fm → AI → Spotify artist genres.
-    Returns comma-separated genre string, or 'unknown'.
+    Tries: Last.fm → AI. Returns comma-separated genre tags, or None.
+    Stores up to 5 classifiable tags for multi-genre distribution.
     """
     title = track.name
     artist = ", ".join(a.name for a in track.artists) if track.artists else ""
 
-    # 1. Last.fm
+    # 1. Last.fm — returns multiple tags
     genre = await _resolve_lastfm(title, artist)
     if genre:
         log.debug(f"Genre via Last.fm for '{title}': {genre}")
@@ -42,32 +44,27 @@ async def resolve_genre(track) -> str:
         log.debug(f"Genre via AI for '{title}': {genre}")
         return genre
 
-    # 3. Spotify artist genres (fallback)
-    genre = await _resolve_spotify(track)
-    if genre:
-        log.debug(f"Genre via Spotify for '{title}': {genre}")
-        return genre
-
-    return "unknown"
+    # 3. No fallback — return None for manual handling
+    log.debug(f"No genre found for '{title}' by '{artist}'")
+    return None
 
 
 async def _resolve_lastfm(title: str, artist: str) -> str | None:
-    """Try Last.fm track tags. Returns genre string if classifiable."""
+    """Try Last.fm track tags. Returns up to 5 classifiable tags as comma-separated string."""
     tags = await get_track_tags(title, artist)
     if not tags:
         return None
 
-    # Try to classify each tag through GENRE_MAP
+    # Collect all tags that map to a TURDOM playlist (up to 5)
+    classifiable = []
     for tag in tags:
-        classified = classify_track(tag)
-        if classified:
-            return tag  # Return raw tag — classify_track() maps it in distribute
+        if classify_track(tag) and tag not in classifiable:
+            classifiable.append(tag)
+            if len(classifiable) >= 5:
+                break
 
-    # If no single tag matches, try comma-joined
-    joined = ", ".join(tags[:5])
-    classified = classify_track(joined)
-    if classified:
-        return joined
+    if classifiable:
+        return ", ".join(classifiable)
 
     return None
 
@@ -89,24 +86,22 @@ async def _resolve_ai(title: str, artist: str) -> str | None:
                 "role": "user",
                 "content": (
                     f"Определи жанр трека '{title}' исполнителя '{artist}'. "
-                    f"Выбери ОДИН из: {genres_list}. "
-                    f"Ответь только названием жанра, одним словом или фразой. "
+                    f"Выбери ОДИН или НЕСКОЛЬКО из: {genres_list}. "
+                    f"Ответь только названиями жанров через запятую. "
                     f"Если не знаешь — ответь 'unknown'."
                 ),
             }],
-            max_tokens=20,
+            max_tokens=50,
             temperature=0,
         )
 
         result = resp.choices[0].message.content.strip().lower()
         if result and result != "unknown":
-            # Verify it maps to a TURDOM playlist
-            for genre_name in _GENRE_NAMES:
-                if genre_name.lower() == result:
-                    return result
-            # Try classify_track as fallback
-            if classify_track(result):
-                return result
+            # Verify each part maps to a TURDOM playlist
+            parts = [p.strip() for p in result.split(",")]
+            valid = [p for p in parts if classify_track(p)]
+            if valid:
+                return ", ".join(valid)
 
         return None
     except Exception as e:
@@ -114,50 +109,30 @@ async def _resolve_ai(title: str, artist: str) -> str | None:
         return None
 
 
-async def _resolve_spotify(track) -> str | None:
-    """Fallback: Spotify artist genres."""
-    if not track.artists:
-        return None
-
-    sp = await get_spotify()
-
-    for artist_ref in track.artists:
-        try:
-            artist = await sp.artist(artist_ref.id)
-            genres = artist.genres or []
-            if genres:
-                return ", ".join(genres)
-        except Exception as e:
-            log.warning(f"Failed to fetch artist {artist_ref.id} for genre: {e}")
-
-    return None
-
-
-async def resolve_and_save_genre(pool: asyncpg.Pool, track) -> str:
+async def resolve_and_save_genre(pool: asyncpg.Pool, track) -> str | None:
     """Resolve genre and save it to all playlist_tracks rows for this track."""
     genre = await resolve_genre(track)
 
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE playlist_tracks SET genre = $1 WHERE spotify_track_id = $2 AND (genre IS NULL OR genre = 'unknown')",
-            genre, track.id,
-        )
-
-    if genre != "unknown":
+    if genre:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE playlist_tracks SET genre = $1 WHERE spotify_track_id = $2 AND (genre IS NULL)",
+                genre, track.id,
+            )
         log.debug(f"Genre for '{track.name}': {genre}")
 
     return genre
 
 
 async def backfill_genres(pool: asyncpg.Pool) -> dict:
-    """Backfill genres for all tracks missing them. Returns stats."""
+    """Backfill genres for all tracks. Resets and re-resolves via Last.fm + AI."""
     async with pool.acquire() as conn:
         tracks = await conn.fetch(
-            "SELECT DISTINCT spotify_track_id FROM playlist_tracks WHERE genre IS NULL OR genre = 'unknown'"
+            "SELECT DISTINCT spotify_track_id FROM playlist_tracks WHERE genre IS NULL"
         )
 
     if not tracks:
-        return {"processed": 0, "resolved": 0}
+        return {"processed": 0, "resolved": 0, "unknown": 0}
 
     sp = await get_spotify()
     processed = 0
@@ -170,20 +145,19 @@ async def backfill_genres(pool: asyncpg.Pool) -> dict:
                 track = await sp.track(track_id)
                 genre = await resolve_genre(track)
 
-                await conn.execute(
-                    "UPDATE playlist_tracks SET genre = $1 WHERE spotify_track_id = $2",
-                    genre, track_id,
-                )
-
-                processed += 1
-                if genre != "unknown":
+                if genre:
+                    await conn.execute(
+                        "UPDATE playlist_tracks SET genre = $1 WHERE spotify_track_id = $2",
+                        genre, track_id,
+                    )
                     resolved += 1
 
-                # Rate limit: avoid hammering Last.fm/OpenAI/Spotify
+                processed += 1
                 await asyncio.sleep(0.25)
             except Exception as e:
                 log.warning(f"Failed to backfill genre for {track_id}: {e}")
                 processed += 1
 
-    log.info(f"Genre backfill done: {processed} processed, {resolved} resolved")
-    return {"processed": processed, "resolved": resolved}
+    unknown = processed - resolved
+    log.info(f"Genre backfill done: {processed} processed, {resolved} resolved, {unknown} unknown")
+    return {"processed": processed, "resolved": resolved, "unknown": unknown}

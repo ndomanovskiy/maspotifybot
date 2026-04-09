@@ -24,21 +24,39 @@ GENRE_MAP = {
     "TURDOM Phonk": ["phonk"],
 }
 
+# Hierarchy: specific genre suppresses its parent.
+# If a track matches Metal, don't also add to Rock.
+_GENRE_HIERARCHY = {
+    "TURDOM Metal": {"TURDOM Rock"},       # metal suppresses rock
+    "TURDOM DnB": {"TURDOM Electronic"},   # dnb suppresses electronic
+    "TURDOM R&B": {"TURDOM Pop"},           # r&b suppresses pop
+}
+
 
 def classify_track(genre_str: str) -> str | None:
-    """Classify a track's genre string into a genre playlist name.
+    """Classify a track's genre string into a single best genre playlist name.
 
-    Matches by whole words: keyword must appear as complete word(s) in the genre.
-    Longer keyword matches take priority to avoid ambiguity
-    (e.g. 'hardcore hip hop' → Hip-Hop via 'hip hop' (2 words) over 'hardcore' (1 word)).
+    Kept for backward compatibility (stats, tests).
+    """
+    results = classify_track_multi(genre_str)
+    return results[0] if results else None
+
+
+def classify_track_multi(genre_str: str) -> list[str]:
+    """Classify a track's genre string into ALL matching genre playlists.
+
+    Applies hierarchy rules: Metal suppresses Rock, DnB suppresses Electronic, etc.
+    Returns deduplicated list of TURDOM playlist names.
     """
     genres = [g.strip().lower() for g in genre_str.split(", ")]
 
-    best_playlist = None
-    best_kw_words = 0
+    matched: set[str] = set()
 
     for genre in genres:
         genre_words = set(genre.split())
+        best_playlist = None
+        best_kw_words = 0
+
         for playlist_name, keywords in GENRE_MAP.items():
             for kw in keywords:
                 kw_words = kw.split()
@@ -46,7 +64,22 @@ def classify_track(genre_str: str) -> str | None:
                     best_kw_words = len(kw_words)
                     best_playlist = playlist_name
 
-    return best_playlist
+        if best_playlist:
+            matched.add(best_playlist)
+
+    # Apply hierarchy: remove suppressed genres
+    # Each individual tag maps to exactly one playlist (longest keyword match wins)
+    suppressed = set()
+    for specific, parents in _GENRE_HIERARCHY.items():
+        if specific in matched:
+            suppressed |= parents
+
+    result = [p for p in matched if p not in suppressed]
+
+    if matched and not result:
+        log.warning(f"All genres suppressed for tags: {genre_str} (matched: {matched})")
+
+    return sorted(result)
 
 
 async def load_genre_playlist_ids(pool: asyncpg.Pool):
@@ -71,7 +104,10 @@ async def load_genre_playlist_ids(pool: asyncpg.Pool):
 
 
 async def distribute_session_tracks(pool: asyncpg.Pool, session_id: int):
-    """Distribute kept tracks from a finished session to genre playlists."""
+    """Distribute kept tracks from a finished session to genre playlists.
+
+    Uses classify_track_multi — a track can go to multiple playlists.
+    """
     if not _genre_playlist_ids:
         await load_genre_playlist_ids(pool)
 
@@ -91,16 +127,18 @@ async def distribute_session_tracks(pool: asyncpg.Pool, session_id: int):
             AND pt.genre IS NOT NULL AND pt.genre != 'unknown'
         """, session_id)
 
-    # Group by genre playlist
+    # Group by genre playlist (multi-genre: one track → multiple playlists)
     to_add: dict[str, list[str]] = {}
     skipped = 0
 
     for track in tracks:
-        genre_playlist = classify_track(track["genre"])
-        if genre_playlist and genre_playlist in _genre_playlist_ids:
-            if genre_playlist not in to_add:
-                to_add[genre_playlist] = []
-            to_add[genre_playlist].append(track["spotify_track_id"])
+        playlists = classify_track_multi(track["genre"])
+        if playlists:
+            for pl_name in playlists:
+                if pl_name in _genre_playlist_ids:
+                    if pl_name not in to_add:
+                        to_add[pl_name] = []
+                    to_add[pl_name].append(track["spotify_track_id"])
         else:
             skipped += 1
 
@@ -135,3 +173,26 @@ async def distribute_session_tracks(pool: asyncpg.Pool, session_id: int):
 
     log.info(f"Distribution done: {distributed} distributed, {skipped} skipped")
     return {"distributed": distributed, "skipped": skipped}
+
+
+async def check_previously_dropped(pool: asyncpg.Pool, spotify_track_id: str) -> list[dict] | None:
+    """Check if a track was previously dropped in any session.
+
+    Returns list of sessions where it was dropped, or None if never dropped.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT DISTINCT s.playlist_name, s.started_at,
+                   COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, '?') as added_by
+            FROM session_tracks st
+            JOIN sessions s ON st.session_id = s.id
+            LEFT JOIN users u ON st.added_by_spotify_id = u.spotify_id
+            WHERE st.spotify_track_id = $1 AND st.vote_result = 'drop'
+        """, spotify_track_id)
+
+    if not rows:
+        return None
+
+    return [{"playlist": r["playlist_name"],
+             "date": r["started_at"].strftime("%d/%m/%Y") if r["started_at"] else "?",
+             "added_by": r["added_by"]} for r in rows]
