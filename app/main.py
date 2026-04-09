@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from app.bot.handlers import setup_bot
+from app.bot import setup_bot
 from app.db.pool import create_pool, close_pool
 from app.db.schema import apply_schema
 

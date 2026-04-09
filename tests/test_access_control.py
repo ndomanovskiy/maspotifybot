@@ -17,12 +17,12 @@ class TestIsRegistered:
         pool = FakePool(store)
         return store, pool
 
-    @patch("app.bot.handlers.settings")
-    @patch("app.bot.handlers._pool", new_callable=lambda: lambda: None)
+    @patch("app.bot.core.settings")
+    @patch("app.bot.core.pool", new_callable=lambda: lambda: None)
     def test_admin_always_registered(self, mock_pool, mock_settings):
         """Admin should always pass is_registered check."""
         mock_settings.telegram_admin_id = 12345
-        from app.bot.handlers import is_admin
+        from app.bot.core import is_admin
         assert is_admin(12345) is True
 
     def test_registered_user_in_db(self):
