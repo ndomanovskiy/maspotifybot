@@ -17,12 +17,17 @@ dp = Dispatcher()
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 # Pool is set in setup_bot
-pool = None
+_pool = None
 
 
 def set_pool(p):
-    global pool
-    pool = p
+    global _pool
+    _pool = p
+
+
+def get_pool():
+    """Get the database pool. Must be called after set_pool()."""
+    return _pool
 
 
 def is_admin(telegram_id: int) -> bool:
@@ -33,7 +38,7 @@ async def is_registered(telegram_id: int) -> bool:
     """Check if user is registered in DB."""
     if is_admin(telegram_id):
         return True
-    async with pool.acquire() as conn:
+    async with _pool.acquire() as conn:
         return await conn.fetchval(
             "SELECT EXISTS(SELECT 1 FROM users WHERE telegram_id = $1)",
             telegram_id,

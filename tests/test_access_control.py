@@ -18,7 +18,7 @@ class TestIsRegistered:
         return store, pool
 
     @patch("app.bot.core.settings")
-    @patch("app.bot.core.pool", new_callable=lambda: lambda: None)
+    @patch("app.bot.core._pool", new_callable=lambda: lambda: None)
     def test_admin_always_registered(self, mock_pool, mock_settings):
         """Admin should always pass is_registered check."""
         mock_settings.telegram_admin_id = 12345

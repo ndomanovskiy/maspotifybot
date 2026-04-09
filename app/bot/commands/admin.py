@@ -24,7 +24,7 @@ from app.services.admin_commands import (
     cmd_close_playlist, cmd_create_next, cmd_dbinfo, log_action, check_duplicate_session,
 )
 from app.bot.core import (
-    pool, is_admin, require_admin, extract_spotify_id, parse_turdom_number,
+    get_pool, is_admin, require_admin, extract_spotify_id, parse_turdom_number,
     reply, send, reply_photo,
 )
 from app.bot.session_manager import session
@@ -45,7 +45,7 @@ async def cmd_auth(message: Message):
     async def on_code(code: str):
         from app.spotify.auth import save_token_to_db
         token = await exchange_code(code)
-        await save_token_to_db(pool, token)
+        await save_token_to_db(get_pool(), token)
         await message.answer("✅ Spotify подключен!")
 
     asyncio.create_task(run_oauth_callback_server(on_code))
@@ -79,7 +79,7 @@ async def cmd_session(message: Message):
         return
 
     # Find upcoming playlist
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         upcoming = await conn.fetchrow(
             "SELECT spotify_id, name FROM playlists WHERE status = 'upcoming' ORDER BY number DESC LIMIT 1"
         )
@@ -91,7 +91,7 @@ async def cmd_session(message: Message):
     playlist_id = upcoming["spotify_id"]
     playlist_name = upcoming["name"]
 
-    if await check_duplicate_session(pool, playlist_id):
+    if await check_duplicate_session(get_pool(), playlist_id):
         await reply(message, "🚫 Для этого плейлиста уже есть сессия!")
         return
 
@@ -99,7 +99,7 @@ async def cmd_session(message: Message):
     tid = message.from_user.id
     if tid not in session.participants:
         session.participants.add(tid)
-        async with pool.acquire() as conn:
+        async with get_pool().acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO users (telegram_id, telegram_name, telegram_username, is_admin)
@@ -109,7 +109,7 @@ async def cmd_session(message: Message):
                 tid, message.from_user.full_name, message.from_user.username or "", True,
             )
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO sessions (playlist_spotify_id, playlist_name) VALUES ($1, $2) RETURNING id",
             playlist_id, playlist_name,
@@ -178,7 +178,7 @@ async def _handle_kick(message: Message):
         await message.answer("Укажи @username: /session kick @username")
         return
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         row = await conn.fetchrow(
             "SELECT telegram_id FROM users WHERE telegram_username = $1", username
         )
@@ -194,7 +194,7 @@ async def _handle_kick(message: Message):
 
     session.participants.discard(tid)
     if session.active_session_id:
-        async with pool.acquire() as conn:
+        async with get_pool().acquire() as conn:
             await conn.execute(
                 "UPDATE session_participants SET active = FALSE, left_at = NOW() WHERE session_id = $1 AND telegram_id = $2",
                 session.active_session_id, tid,
@@ -285,7 +285,7 @@ async def cmd_reschedule(message: Message):
         await message.answer("Формат даты: ДД/ММ/ГГГГ")
         return
 
-    result = await reschedule_playlist(pool, new_date)
+    result = await reschedule_playlist(get_pool(), new_date)
     if result:
         await reply(
             message,
@@ -302,7 +302,7 @@ async def cmd_reschedule(message: Message):
 async def cmd_scan(message: Message):
     await message.answer("🔍 Сканирую upcoming плейлист на дубликаты...")
     try:
-        async with pool.acquire() as conn:
+        async with get_pool().acquire() as conn:
             playlists = await conn.fetch(
                 "SELECT id, spotify_id, name FROM playlists WHERE status IN ('active', 'upcoming')"
             )
@@ -326,13 +326,13 @@ async def cmd_scan(message: Message):
                 if not isrc:
                     isrc = await get_track_isrc(track.id)
 
-                duplicates = await check_duplicate(pool, track.id, isrc)
+                duplicates = await check_duplicate(get_pool(), track.id, isrc)
                 duplicates = [d for d in duplicates if d["playlist"] != pl["name"]]
 
                 if duplicates:
                     found_count += 1
                     await sp.playlist_remove(pl["spotify_id"], [f"spotify:track:{track.id}"])
-                    async with pool.acquire() as conn:
+                    async with get_pool().acquire() as conn:
                         await conn.execute(
                             "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
                             pl["id"], track.id,
@@ -360,7 +360,7 @@ async def cmd_import_all(message: Message):
     await message.answer("⏳ Сканирую Spotify и импортирую все TURDOM плейлисты... Это займёт пару минут.")
 
     try:
-        results = await import_all_turdom(pool)
+        results = await import_all_turdom(get_pool())
         total_tracks = sum(r["tracks"] for r in results)
         text = f"✅ <b>Импорт завершён!</b>\n\nПлейлистов: {len(results)}\nТреков: {total_tracks}\n\n"
         for r in results[:20]:
@@ -389,7 +389,7 @@ async def cmd_import(message: Message):
 
     await message.answer("⏳ Импортирую...")
     try:
-        result = await import_playlist(pool, playlist_id)
+        result = await import_playlist(get_pool(), playlist_id)
         await reply(
             message,
             f"✅ <b>{result['name']}</b> — {result['tracks']} треков импортировано!",
@@ -408,7 +408,7 @@ async def on_distribute(message: Message):
         await message.answer("Укажи номер: /distribute 91")
         return
 
-    result = await cmd_distribute(pool, num, triggered_by=message.from_user.id)
+    result = await cmd_distribute(get_pool(), num, triggered_by=message.from_user.id)
     if result["status"] == "already_done":
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✅ Повторить", callback_data=f"redistribute:{num}"),
@@ -429,7 +429,7 @@ async def on_recap(message: Message):
         await message.answer("Укажи номер: /recap 91")
         return
 
-    result = await cmd_recap(pool, num, triggered_by=message.from_user.id)
+    result = await cmd_recap(get_pool(), num, triggered_by=message.from_user.id)
 
     if result["status"] != "ok":
         await reply(message, result["message"])
@@ -449,7 +449,7 @@ async def on_close_playlist(message: Message):
         await message.answer("Укажи номер: /close_playlist 91")
         return
 
-    result = await cmd_close_playlist(pool, num, triggered_by=message.from_user.id)
+    result = await cmd_close_playlist(get_pool(), num, triggered_by=message.from_user.id)
     await reply(message, result["message"])
 
 
@@ -461,7 +461,7 @@ async def on_create_next(message: Message):
     args = message.text.split(maxsplit=1)
     theme = args[1].strip() if len(args) > 1 else None
 
-    result = await cmd_create_next(pool, theme=theme, triggered_by=message.from_user.id)
+    result = await cmd_create_next(get_pool(), theme=theme, triggered_by=message.from_user.id)
 
     if result["status"] == "blocked":
         await reply(message, result["message"])
@@ -486,57 +486,111 @@ async def on_create_next(message: Message):
 @router.message(Command("health"))
 @require_admin
 async def on_health(message: Message):
-    async with pool.acquire() as conn:
+    import time
+    from app.spotify.auth import get_spotify
+
+    lines = ["🩺 <b>Health Check</b>\n"]
+
+    # --- Bot status ---
+    uptime_sec = int(time.time() - _bot_start_time)
+    hours, remainder = divmod(uptime_sec, 3600)
+    minutes, secs = divmod(remainder, 60)
+    uptime_str = f"{hours}h {minutes}m" if hours else f"{minutes}m {secs}s"
+    lines.append(f"🤖 Uptime: <b>{uptime_str}</b>")
+
+    # --- Session status ---
+    if session.active_session_id:
+        lines.append(
+            f"🎧 Сессия #{session.active_session_id}: "
+            f"{len(session.participants)} участников, "
+            f"{len(session.played_track_ids)} треков"
+        )
+    else:
+        lines.append("💤 Нет активной сессии")
+
+    # --- Spotify ---
+    try:
+        sp = await get_spotify()
+        playback = await sp.playback()
+        if playback and playback.is_playing:
+            lines.append("🟢 Spotify: играет")
+        else:
+            lines.append("⏸ Spotify: пауза/не играет")
+    except Exception:
+        lines.append("🔴 Spotify: недоступен")
+
+    # --- DB ---
+    try:
+        async with get_pool().acquire() as conn:
+            db_ok = await conn.fetchval("SELECT 1")
+        lines.append("🟢 PostgreSQL: ок")
+    except Exception:
+        lines.append("🔴 PostgreSQL: недоступен")
+
+    # --- Playlist health ---
+    async with get_pool().acquire() as conn:
         pl = await conn.fetchrow(
             "SELECT id, name, number FROM playlists WHERE status IN ('active', 'upcoming') ORDER BY number DESC LIMIT 1"
         )
-        if not pl:
-            await message.answer("Нет active/upcoming плейлиста.")
-            return
 
-        stats = await conn.fetchrow("""
-            SELECT COUNT(*) as total,
-                   COUNT(*) FILTER (WHERE ai_facts IS NOT NULL) as with_facts,
-                   COUNT(*) FILTER (WHERE ai_facts IS NULL) as no_facts,
-                   COUNT(*) FILTER (WHERE genre IS NOT NULL AND genre != 'unknown') as with_genre,
-                   COUNT(*) FILTER (WHERE genre IS NULL OR genre = 'unknown') as no_genre
-            FROM playlist_tracks WHERE playlist_id = $1
-        """, pl["id"])
+    if pl:
+        async with get_pool().acquire() as conn:
+            stats = await conn.fetchrow("""
+                SELECT COUNT(*) as total,
+                       COUNT(*) FILTER (WHERE ai_facts IS NOT NULL) as with_facts,
+                       COUNT(*) FILTER (WHERE ai_facts IS NULL) as no_facts,
+                       COUNT(*) FILTER (WHERE genre IS NOT NULL AND genre != 'unknown') as with_genre,
+                       COUNT(*) FILTER (WHERE genre IS NULL OR genre = 'unknown') as no_genre
+                FROM playlist_tracks WHERE playlist_id = $1
+            """, pl["id"])
 
-        no_genre_tracks = await conn.fetch("""
-            SELECT title, artist FROM playlist_tracks
-            WHERE playlist_id = $1 AND (genre IS NULL OR genre = 'unknown')
-            ORDER BY title
-        """, pl["id"])
+            no_genre_tracks = await conn.fetch("""
+                SELECT title, artist FROM playlist_tracks
+                WHERE playlist_id = $1 AND (genre IS NULL OR genre = 'unknown')
+                ORDER BY title
+            """, pl["id"])
 
-        no_facts_tracks = await conn.fetch("""
-            SELECT title, artist FROM playlist_tracks
-            WHERE playlist_id = $1 AND ai_facts IS NULL
-            ORDER BY title
-        """, pl["id"])
+            no_facts_tracks = await conn.fetch("""
+                SELECT title, artist FROM playlist_tracks
+                WHERE playlist_id = $1 AND ai_facts IS NULL
+                ORDER BY title
+            """, pl["id"])
 
-    lines = [f"🩺 <b>Health: {pl['name']}</b>\n"]
-    lines.append(f"🎵 Треков: {stats['total']}")
-    lines.append(f"💡 Факты: {stats['with_facts']}/{stats['total']}")
-    lines.append(f"🎸 Жанры: {stats['with_genre']}/{stats['total']}")
+        lines.append(f"\n📋 <b>{pl['name']}</b>")
+        lines.append(f"🎵 Треков: {stats['total']}")
+        lines.append(f"💡 Факты: {stats['with_facts']}/{stats['total']}")
+        lines.append(f"🎸 Жанры: {stats['with_genre']}/{stats['total']}")
 
-    if stats["no_facts"] > 0:
-        lines.append(f"\n❌ <b>Без фактов ({stats['no_facts']}):</b>")
-        for t in no_facts_tracks:
-            lines.append(f"   • {t['title']} — {t['artist']}")
+        if stats["no_facts"] > 0:
+            lines.append(f"\n❌ <b>Без фактов ({stats['no_facts']}):</b>")
+            for t in no_facts_tracks[:10]:
+                lines.append(f"   • {t['title']} — {t['artist']}")
+            if stats["no_facts"] > 10:
+                lines.append(f"   ...и ещё {stats['no_facts'] - 10}")
 
-    if stats["no_genre"] > 0:
-        lines.append(f"\n❌ <b>Без жанра ({stats['no_genre']}):</b>")
-        for t in no_genre_tracks:
-            lines.append(f"   • {t['title']} — {t['artist']}")
-        lines.append(f"\n<i>Причина: у артистов нет жанров в Spotify API</i>")
+        if stats["no_genre"] > 0:
+            lines.append(f"\n❌ <b>Без жанра ({stats['no_genre']}):</b>")
+            for t in no_genre_tracks[:10]:
+                lines.append(f"   • {t['title']} — {t['artist']}")
+            if stats["no_genre"] > 10:
+                lines.append(f"   ...и ещё {stats['no_genre'] - 10}")
 
-    if stats["no_facts"] == 0 and stats["no_genre"] == 0:
-        lines.append(f"\n✅ Всё готово к сессии!")
-    elif stats["no_facts"] == 0:
-        lines.append(f"\n✅ Факты готовы, жанры частично (Spotify API ограничение)")
+        if stats["no_facts"] == 0 and stats["no_genre"] == 0:
+            lines.append(f"\n✅ Всё готово к сессии!")
+    else:
+        lines.append("\n📋 Нет active/upcoming плейлиста")
 
     await reply(message, "\n".join(lines))
+
+
+_bot_start_time: float = 0
+
+
+def init_health():
+    """Call on bot startup to record start time."""
+    import time
+    global _bot_start_time
+    _bot_start_time = time.time()
 
 
 # ── /dbinfo ─────────────────────────────────────────────────────
@@ -544,7 +598,7 @@ async def on_health(message: Message):
 @router.message(Command("dbinfo"))
 @require_admin
 async def on_dbinfo(message: Message):
-    text = await cmd_dbinfo(pool)
+    text = await cmd_dbinfo(get_pool())
     await reply(message, text)
 
 
@@ -555,7 +609,7 @@ async def on_dbinfo(message: Message):
 async def on_backfill_genres(message: Message):
     await message.answer("⏳ Запускаю бэкфилл жанров...")
     try:
-        result = await backfill_genres(pool)
+        result = await backfill_genres(get_pool())
         await message.answer(
             f"✅ Бэкфилл готов!\n"
             f"Обработано: {result['processed']}\n"

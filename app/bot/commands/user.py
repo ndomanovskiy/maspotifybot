@@ -13,7 +13,7 @@ from app.services.playlists import get_next_playlist, check_duplicate, get_track
 from app.services.track_formatter import format_track, format_album
 from app.services.ai import analyze_easter_egg
 from app.bot.core import (
-    bot, pool, is_admin, require_registered, extract_spotify_id,
+    bot, get_pool, is_admin, require_registered, extract_spotify_id,
     reply, send,
 )
 from app.bot.session_manager import session
@@ -103,7 +103,7 @@ async def cmd_reg(message: Message):
         return
 
     tid = message.from_user.id
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         await conn.execute(
             """
             INSERT INTO users (telegram_id, telegram_name, telegram_username, spotify_id, is_admin)
@@ -121,7 +121,7 @@ async def cmd_reg(message: Message):
 @router.message(Command("next"))
 @require_registered
 async def cmd_next(message: Message):
-    result = await get_next_playlist(pool)
+    result = await get_next_playlist(get_pool())
     if result:
         link = result.get("invite_url") or result["url"]
         await reply(
@@ -148,7 +148,7 @@ async def cmd_setnextlink(message: Message):
         return
 
     invite_url = args[1].strip()
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         updated = await conn.fetchval(
             "UPDATE playlists SET invite_url = $1 WHERE status = 'upcoming' RETURNING name",
             invite_url,
@@ -176,7 +176,7 @@ async def cmd_get(message: Message):
         await message.answer("Укажи номер: /get 92")
         return
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         pl = await conn.fetchrow(
             "SELECT name, url, status FROM playlists WHERE number = $1", num
         )
@@ -196,7 +196,7 @@ async def cmd_genres(message: Message):
     from app.services.genre_distributor import _genre_playlist_ids, load_genre_playlist_ids
 
     if not _genre_playlist_ids:
-        await load_genre_playlist_ids(pool)
+        await load_genre_playlist_ids(get_pool())
 
     if not _genre_playlist_ids:
         await message.answer("Жанровые плейлисты не найдены.")
@@ -232,7 +232,7 @@ async def cmd_check(message: Message):
     await message.answer("🔍 Проверяю...")
 
     isrc = await get_track_isrc(track_id)
-    duplicates = await check_duplicate(pool, track_id, isrc)
+    duplicates = await check_duplicate(get_pool(), track_id, isrc)
 
     if duplicates:
         lines = []
@@ -255,7 +255,7 @@ async def cmd_check(message: Message):
 async def cmd_stats(message: Message):
     from app.services.genre_distributor import classify_track
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         total_tracks = await conn.fetchval("SELECT COUNT(*) FROM playlist_tracks")
         total_playlists = await conn.fetchval("SELECT COUNT(*) FROM playlists WHERE number IS NOT NULL")
         total_users = await conn.fetchval("SELECT COUNT(*) FROM users WHERE spotify_id IS NOT NULL")
@@ -293,7 +293,7 @@ async def cmd_stats(message: Message):
         emoji = GENRE_EMOJIS.get(name, "")
         msg1 += f"{emoji} {name} — {count}\n"
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         all_user_genres = await conn.fetch("""
             SELECT COALESCE(u.telegram_username, u.telegram_name) as name,
                    pt.genre, COUNT(*) as cnt
@@ -334,7 +334,7 @@ async def cmd_mystats(message: Message):
     from app.services.genre_distributor import classify_track
 
     tid = message.from_user.id
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         user = await conn.fetchrow(
             "SELECT spotify_id, telegram_username, telegram_name FROM users WHERE telegram_id = $1", tid
         )
@@ -414,7 +414,7 @@ async def cmd_history(message: Message):
 
 
 async def _show_history_page(message_or_callback, offset: int):
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         total = await conn.fetchval("SELECT COUNT(*) FROM sessions")
         sessions = await conn.fetch("""
             SELECT s.id, s.playlist_name, s.started_at, s.ended_at,
@@ -474,7 +474,7 @@ async def _show_history_page(message_or_callback, offset: int):
 
 async def _show_session_details(message: Message, session_num: int):
     """Show detailed view of a specific session."""
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         sess = await conn.fetchrow("""
             SELECT s.id, s.playlist_name, s.started_at, s.ended_at,
                    (SELECT COUNT(*) FROM session_participants WHERE session_id = s.id) as participants
@@ -526,7 +526,7 @@ async def cmd_join(message: Message):
         if tid not in session.participants:
             session.participants.add(tid)
         if session.active_session_id:
-            async with pool.acquire() as conn:
+            async with get_pool().acquire() as conn:
                 await conn.execute(
                     "INSERT INTO session_participants (session_id, telegram_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                     session.active_session_id, tid,
@@ -567,7 +567,7 @@ async def cmd_leave(message: Message):
 
     session.participants.discard(tid)
     if session.active_session_id:
-        async with pool.acquire() as conn:
+        async with get_pool().acquire() as conn:
             await conn.execute(
                 "UPDATE session_participants SET active = FALSE, left_at = NOW() WHERE session_id = $1 AND telegram_id = $2",
                 session.active_session_id, tid,
@@ -586,7 +586,7 @@ async def cmd_secret(message: Message):
 
     session_id = session.active_session_id
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         upcoming_pl = await conn.fetchrow(
             """SELECT p.id FROM playlists p
                JOIN sessions s ON s.playlist_spotify_id = p.spotify_id
@@ -596,7 +596,7 @@ async def cmd_secret(message: Message):
 
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        async with pool.acquire() as conn:
+        async with get_pool().acquire() as conn:
             current = await conn.fetchval(
                 "SELECT secret_note FROM session_participants WHERE session_id = $1 AND telegram_id = $2",
                 session_id, message.from_user.id,
@@ -622,7 +622,7 @@ async def cmd_secret(message: Message):
 
     secret = args[1].strip()
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         exists = await conn.fetchval(
             "SELECT 1 FROM session_participants WHERE session_id = $1 AND telegram_id = $2",
             session_id, message.from_user.id,
@@ -642,7 +642,7 @@ async def cmd_secret(message: Message):
 
     user_tracks = []
     if upcoming_pl:
-        async with pool.acquire() as conn:
+        async with get_pool().acquire() as conn:
             spotify_id = await conn.fetchval(
                 "SELECT spotify_id FROM users WHERE telegram_id = $1", message.from_user.id
             )
@@ -678,7 +678,7 @@ async def on_secret_clarification(message: Message):
     info = session.waiting_secret_clarification.pop(message.from_user.id)
     updated_secret = f"{info['secret']} | Уточнение: {message.text.strip()}"
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         await conn.execute(
             "UPDATE session_participants SET secret_note = $1 WHERE session_id = $2 AND telegram_id = $3",
             updated_secret, info["session_id"], message.from_user.id,

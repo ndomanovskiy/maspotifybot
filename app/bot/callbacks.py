@@ -15,7 +15,7 @@ from app.services.ai import generate_track_facts
 from app.services.track_formatter import format_track
 from app.services.admin_commands import cmd_distribute_force, cmd_recap_regenerate
 from app.bot.core import (
-    pool, is_admin, is_registered,
+    get_pool, is_admin, is_registered,
     require_admin_callback, send, safe_int, _NO_PREVIEW,
 )
 from app.bot.session_manager import session
@@ -104,7 +104,7 @@ async def on_vote(callback: CallbackQuery):
         await callback.answer("Ошибка")
         return
 
-    result = await record_vote(pool, session_track_id, callback.from_user.id, vote_type, session_id=session.active_session_id)
+    result = await record_vote(get_pool(), session_track_id, callback.from_user.id, vote_type, session_id=session.active_session_id)
 
     if result["status"] == "already_voted":
         await callback.answer("Ты уже голосовал за этот трек!")
@@ -134,7 +134,7 @@ async def on_vote(callback: CallbackQuery):
     await session.finalize_track_card(session_track_id, result_text)
 
     if vote_result == "drop" and session.active_playlist_id:
-        async with pool.acquire() as conn:
+        async with get_pool().acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT spotify_track_id FROM session_tracks WHERE id = $1", session_track_id
             )
@@ -173,7 +173,7 @@ async def on_regen_facts(callback: CallbackQuery):
         return
     await callback.answer("🔄 Генерирую новые факты...")
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         track = await conn.fetchrow(
             "SELECT spotify_track_id, title, artist FROM session_tracks WHERE id = $1",
             session_track_id,
@@ -182,7 +182,7 @@ async def on_regen_facts(callback: CallbackQuery):
     if not track:
         return
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         await conn.execute(
             "UPDATE playlist_tracks SET ai_facts = NULL WHERE spotify_track_id = $1",
             track["spotify_track_id"],
@@ -191,7 +191,7 @@ async def on_regen_facts(callback: CallbackQuery):
     facts = await generate_track_facts(track["title"], track["artist"], "")
 
     if facts:
-        async with pool.acquire() as conn:
+        async with get_pool().acquire() as conn:
             await conn.execute(
                 "UPDATE playlist_tracks SET ai_facts = $1 WHERE spotify_track_id = $2",
                 facts, track["spotify_track_id"],
@@ -218,7 +218,7 @@ async def on_approve(callback: CallbackQuery):
         return
     if tid not in session.participants:
         session.participants.add(tid)
-        async with pool.acquire() as conn:
+        async with get_pool().acquire() as conn:
             await conn.execute(
                 "INSERT INTO users (telegram_id, telegram_name, telegram_username) VALUES ($1, $2, $3) ON CONFLICT (telegram_id) DO NOTHING",
                 tid, "", "",
@@ -306,7 +306,7 @@ async def on_create_playlist(callback: CallbackQuery):
     # Normal playlist
     await callback.answer("Создаю...")
     try:
-        result = await create_next_playlist(pool)
+        result = await create_next_playlist(get_pool())
         text = (
             f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
             f"📎 Открой плейлист в Spotify → Invite Collaborators → скинь ссылку сюда:\n"
@@ -359,7 +359,7 @@ async def on_redistribute(callback: CallbackQuery):
         return
     await callback.answer("Запускаю...")
     await callback.message.edit_text("⏳ Раскидываю треки...", parse_mode="HTML")
-    result = await cmd_distribute_force(pool, num, triggered_by=callback.from_user.id)
+    result = await cmd_distribute_force(get_pool(), num, triggered_by=callback.from_user.id)
     await callback.message.edit_text(result["message"], parse_mode="HTML")
 
 
@@ -375,7 +375,7 @@ async def on_recap_page(callback: CallbackQuery):
         await callback.answer("Ошибка")
         return
 
-    async with pool.acquire() as conn:
+    async with get_pool().acquire() as conn:
         pl = await conn.fetchrow("SELECT spotify_id FROM playlists WHERE number = $1", turdom_num)
         recap_text = None
         if pl:
@@ -414,7 +414,7 @@ async def on_rerecap(callback: CallbackQuery):
     await callback.answer("Генерирую...")
     await callback.message.edit_reply_markup(reply_markup=None)
 
-    result = await cmd_recap_regenerate(pool, num, triggered_by=callback.from_user.id)
+    result = await cmd_recap_regenerate(get_pool(), num, triggered_by=callback.from_user.id)
 
     if result["status"] == "ok" and result.get("recap_text"):
         await session.send_recap_carousel(callback.message.chat.id, result["recap_text"], num)

@@ -40,9 +40,9 @@ class SessionManager:
 
     async def get_participant_names(self) -> str:
         """Get formatted list of participant names."""
-        from app.bot.core import pool
+        from app.bot.core import get_pool as _get_pool
         names = []
-        async with pool.acquire() as conn:
+        async with _get_pool().acquire() as conn:
             for tid in self.participants:
                 row = await conn.fetchrow(
                     "SELECT telegram_username, telegram_name FROM users WHERE telegram_id = $1", tid
@@ -56,7 +56,7 @@ class SessionManager:
 
     async def update_session_message(self):
         """Update the session creation message with current participant list."""
-        from app.bot.core import pool, edit_text
+        from app.bot.core import get_pool as _get_pool, edit_text
         if not self.session_message or not self.active_session_id:
             return
         try:
@@ -64,7 +64,7 @@ class SessionManager:
             start_kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="▶️ Запустить прослушивание!", callback_data="start_listening")
             ]])
-            async with pool.acquire() as conn:
+            async with _get_pool().acquire() as conn:
                 playlist_name = await conn.fetchval(
                     "SELECT playlist_name FROM sessions WHERE id = $1", self.active_session_id
                 )
@@ -81,7 +81,7 @@ class SessionManager:
 
     async def on_track_change(self, info: TrackInfo):
         """Handle Spotify track change event."""
-        from app.bot.core import bot, pool, is_admin, send, send_photo
+        from app.bot.core import bot, get_pool as _get_pool, is_admin, send, send_photo
 
         if self.active_session_id is None:
             return
@@ -109,7 +109,7 @@ class SessionManager:
         self.current_session_track_id = session_track_id
 
         # Persist current track to DB for recovery
-        async with pool.acquire() as conn:
+        async with _get_pool().acquire() as conn:
             await conn.execute(
                 "UPDATE sessions SET current_track_id = $1 WHERE id = $2",
                 session_track_id, self.active_session_id,
@@ -118,7 +118,7 @@ class SessionManager:
         # Resolve added_by
         added_by_name = None
         if info.added_by:
-            async with pool.acquire() as conn:
+            async with _get_pool().acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT telegram_username, telegram_name FROM users WHERE spotify_id = $1", info.added_by
                 )
@@ -134,7 +134,7 @@ class SessionManager:
 
         # Check cached AI facts first, then generate
         cached_facts = None
-        async with pool.acquire() as conn:
+        async with _get_pool().acquire() as conn:
             cached_facts = await conn.fetchval(
                 "SELECT ai_facts FROM playlist_tracks WHERE spotify_track_id = $1 AND ai_facts IS NOT NULL LIMIT 1",
                 info.track_id,
@@ -145,7 +145,7 @@ class SessionManager:
         else:
             facts = await generate_track_facts(info.title, info.artist, info.album)
             if facts:
-                async with pool.acquire() as conn:
+                async with _get_pool().acquire() as conn:
                     await conn.execute(
                         "UPDATE playlist_tracks SET ai_facts = $1 WHERE spotify_track_id = $2",
                         facts, info.track_id,
@@ -221,7 +221,7 @@ class SessionManager:
         self.track_messages[session_track_id] = sent_messages
 
         # Persist to DB for recovery
-        async with pool.acquire() as conn:
+        async with _get_pool().acquire() as conn:
             for chat_id, msg_id, caption in sent_messages:
                 await conn.execute(
                     """INSERT INTO track_messages (session_track_id, chat_id, message_id, caption)
@@ -231,12 +231,12 @@ class SessionManager:
 
     async def update_vote_buttons(self, session_track_id: int):
         """Update voting button labels with current counts."""
-        from app.bot.core import bot, pool, is_admin
+        from app.bot.core import bot, get_pool as _get_pool, is_admin
 
         if session_track_id not in self.track_messages:
             return
 
-        async with pool.acquire() as conn:
+        async with _get_pool().acquire() as conn:
             keep_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM votes WHERE session_track_id = $1 AND vote = 'keep'", session_track_id
             )
@@ -294,7 +294,7 @@ class SessionManager:
 
     async def check_session_complete(self):
         """Check if all tracks have been voted on — suggest ending."""
-        from app.bot.core import pool, send
+        from app.bot.core import get_pool as _get_pool, send
 
         if self.active_session_id is None:
             return
@@ -302,7 +302,7 @@ class SessionManager:
         if self.session_end_prompted:
             return
 
-        async with pool.acquire() as conn:
+        async with _get_pool().acquire() as conn:
             pending = await conn.fetchval(
                 "SELECT COUNT(*) FROM session_tracks WHERE session_id = $1 AND vote_result = 'pending'",
                 self.active_session_id,
@@ -329,7 +329,7 @@ class SessionManager:
 
     async def end_session(self):
         """End the active session: stop monitor, finalize votes, send recap."""
-        from app.bot.core import bot, pool, send
+        from app.bot.core import bot, get_pool as _get_pool, send
         from app.services.admin_commands import _generate_and_save_recap, log_action
 
         if self.active_session_id is None:
@@ -338,7 +338,7 @@ class SessionManager:
         session_id_to_end = self.active_session_id
         await self.monitor.stop()
 
-        async with pool.acquire() as conn:
+        async with _get_pool().acquire() as conn:
             await conn.execute(
                 "UPDATE session_tracks SET vote_result = 'keep' WHERE session_id = $1 AND vote_result = 'pending'",
                 session_id_to_end,
@@ -369,7 +369,7 @@ class SessionManager:
 
         # Generate full recap
         turdom_number = None
-        async with pool.acquire() as conn:
+        async with _get_pool().acquire() as conn:
             turdom_number = await conn.fetchval(
                 "SELECT p.number FROM playlists p JOIN sessions s ON s.playlist_spotify_id = p.spotify_id WHERE s.id = $1",
                 session_id_to_end,
@@ -394,7 +394,7 @@ class SessionManager:
                         await send(tid, dist_msg)
                     except Exception as e:
                         log.debug(f"Failed to notify {tid}: {e}")
-            async with pool.acquire() as conn:
+            async with _get_pool().acquire() as conn:
                 await conn.execute(
                     "UPDATE sessions SET distributed_at = NOW() WHERE id = $1",
                     session_id_to_end,
@@ -450,7 +450,7 @@ class SessionManager:
 
     async def cache_pre_recap_teaser(self):
         """Pre-generate recap teaser in background."""
-        from app.bot.core import pool
+        from app.bot.core import get_pool as _get_pool
         try:
             sp = await get_spotify()
             pl_items = await sp.playlist_items(self.active_playlist_id, limit=100)
@@ -465,13 +465,13 @@ class SessionManager:
             top_spotify_id = max(contributors, key=contributors.get) if contributors else None
             top_name = None
             if top_spotify_id:
-                async with pool.acquire() as conn:
+                async with _get_pool().acquire() as conn:
                     row = await conn.fetchrow("SELECT telegram_name FROM users WHERE spotify_id = $1", top_spotify_id)
                     if row:
                         top_name = row["telegram_name"]
 
             participant_names = []
-            async with pool.acquire() as conn:
+            async with _get_pool().acquire() as conn:
                 for tid in self.participants:
                     row = await conn.fetchrow("SELECT telegram_name FROM users WHERE telegram_id = $1", tid)
                     if row:
@@ -485,8 +485,8 @@ class SessionManager:
 
     async def recover(self):
         """Recover active session state from DB after bot restart."""
-        from app.bot.core import pool
-        async with pool.acquire() as conn:
+        from app.bot.core import get_pool as _get_pool
+        async with _get_pool().acquire() as conn:
             active = await conn.fetchrow(
                 "SELECT id, playlist_spotify_id, current_track_id FROM sessions WHERE status = 'active' ORDER BY id DESC LIMIT 1"
             )

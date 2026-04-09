@@ -13,7 +13,7 @@ from app.services.track_formatter import format_track
 from app.bot.core import bot, dp, set_pool, is_admin, send, reply
 from app.bot.session_manager import session
 from app.bot.commands.user import router as user_router
-from app.bot.commands.admin import router as admin_router, set_duplicate_notify
+from app.bot.commands.admin import router as admin_router, set_duplicate_notify, init_health
 from app.bot.callbacks import router as callbacks_router
 
 log = logging.getLogger(__name__)
@@ -32,11 +32,11 @@ async def on_theme_input(message: Message):
     session.waiting_theme = False
 
     from app.services.playlists import create_next_playlist
-    from app.bot.core import pool
+    from app.bot.core import get_pool
 
     theme = message.text.strip()
     try:
-        result = await create_next_playlist(pool, theme=theme)
+        result = await create_next_playlist(get_pool(), theme=theme)
         text = (
             f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
             f"📎 Открой плейлист в Spotify → Invite Collaborators → скинь ссылку сюда:\n"
@@ -135,5 +135,6 @@ async def setup_bot(pool):
     watcher = DuplicateWatcher(pool, on_duplicate_found)
     asyncio.create_task(watcher.start())
 
+    init_health()
     log.info("Starting Telegram bot polling...")
     await dp.start_polling(bot)
