@@ -5,6 +5,7 @@ import asyncpg
 
 from app.spotify.auth import get_spotify
 from app.services.genre_resolver import resolve_and_save_genre
+from app.services.normalize import normalize_title, normalize_artist, is_fuzzy_match
 
 log = logging.getLogger(__name__)
 
@@ -55,15 +56,18 @@ async def import_playlist(pool: asyncpg.Pool, playlist_spotify_id: str) -> dict:
                 added_at = item.added_at if hasattr(item, "added_at") else None
 
                 try:
+                    title = track.name
+                    artist = ", ".join(a.name for a in track.artists)
                     await conn.execute(
                         """
-                        INSERT INTO playlist_tracks (playlist_id, spotify_track_id, isrc, title, artist, added_by_spotify_id, added_at)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        INSERT INTO playlist_tracks (playlist_id, spotify_track_id, isrc, title, artist,
+                                                     added_by_spotify_id, added_at, normalized_title, normalized_artist)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                         ON CONFLICT (playlist_id, spotify_track_id) DO NOTHING
                         """,
                         playlist_db_id, track.id, isrc,
-                        track.name, ", ".join(a.name for a in track.artists),
-                        added_by, added_at,
+                        title, artist, added_by, added_at,
+                        normalize_title(title), normalize_artist(artist),
                     )
                     imported += 1
 
@@ -108,9 +112,12 @@ async def import_all_turdom(pool: asyncpg.Pool) -> list[dict]:
     return results
 
 
-async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str | None = None) -> list[dict]:
+async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str | None = None,
+                          title: str | None = None, artist: str | None = None) -> list[dict]:
     """Check if a track is a duplicate across all imported playlists.
-    Returns list of playlists where it was found."""
+
+    Returns list of dicts with 'match' type: 'exact', 'isrc', 'fuzzy_exact', 'fuzzy_contains', 'fuzzy_levenshtein'.
+    """
     duplicates = []
     async with pool.acquire() as conn:
         # 1. Exact Track ID match
@@ -139,6 +146,33 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
             for r in rows:
                 duplicates.append({"match": "isrc", "title": r["title"], "artist": r["artist"],
                                    "playlist": r["playlist_name"], "url": r["playlist_url"]})
+
+        # 3. Fuzzy match (normalized title + artist)
+        if not duplicates and title and artist:
+            norm_title = normalize_title(title)
+            norm_artist = normalize_artist(artist)
+
+            # Find candidates with same normalized artist
+            candidates = await conn.fetch(
+                """
+                SELECT pt.spotify_track_id, pt.title, pt.artist,
+                       pt.normalized_title, pt.normalized_artist,
+                       p.name as playlist_name, p.url as playlist_url
+                FROM playlist_tracks pt JOIN playlists p ON pt.playlist_id = p.id
+                WHERE pt.normalized_artist = $1 AND pt.spotify_track_id != $2
+                """,
+                norm_artist, spotify_track_id,
+            )
+
+            for r in candidates:
+                cand_norm_title = r["normalized_title"] or normalize_title(r["title"])
+                match_type = is_fuzzy_match(norm_title, cand_norm_title, norm_artist, norm_artist)
+                if match_type:
+                    duplicates.append({
+                        "match": match_type,
+                        "title": r["title"], "artist": r["artist"],
+                        "playlist": r["playlist_name"], "url": r["playlist_url"],
+                    })
 
     return duplicates
 

@@ -193,7 +193,21 @@ VERSIONED_MIGRATIONS: list[tuple[int, str, str]] = [
      "ALTER TABLE votes ADD CONSTRAINT fk_votes_telegram_id FOREIGN KEY (telegram_id) REFERENCES users(telegram_id) ON DELETE CASCADE"),
     (32, "fk: ratings.telegram_id -> users",
      "ALTER TABLE ratings ADD CONSTRAINT fk_ratings_telegram_id FOREIGN KEY (telegram_id) REFERENCES users(telegram_id) ON DELETE CASCADE"),
+
+    # --- Fuzzy duplicate detection ---
+    (33, "normalized_title column",
+     "ALTER TABLE playlist_tracks ADD COLUMN IF NOT EXISTS normalized_title TEXT"),
+    (34, "normalized_artist column",
+     "ALTER TABLE playlist_tracks ADD COLUMN IF NOT EXISTS normalized_artist TEXT"),
+    (35, "idx: playlist_tracks.normalized_artist",
+     "CREATE INDEX IF NOT EXISTS idx_playlist_tracks_normalized_artist ON playlist_tracks (normalized_artist)"),
+    (36, "idx: playlist_tracks.normalized_title",
+     "CREATE INDEX IF NOT EXISTS idx_playlist_tracks_normalized_title ON playlist_tracks (normalized_title)"),
 ]
+
+# Note: backfill of normalized_title/normalized_artist for existing tracks
+# is done via Python (not SQL) because normalization logic lives in app code.
+# Run /backfill_normalized in bot after deploy.
 
 
 async def apply_schema(pool: asyncpg.Pool):

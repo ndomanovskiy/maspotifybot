@@ -8,14 +8,16 @@ from app.spotify.auth import get_spotify
 from app.services.playlists import check_duplicate, get_track_isrc
 from app.services.ai import generate_track_facts
 from app.services.genre_resolver import resolve_and_save_genre
+from app.services.normalize import normalize_title, normalize_artist
 
 log = logging.getLogger(__name__)
 
 
 class DuplicateWatcher:
-    def __init__(self, pool: asyncpg.Pool, notify_callback):
+    def __init__(self, pool: asyncpg.Pool, notify_callback, confirm_callback=None):
         self._pool = pool
         self._notify = notify_callback  # async fn(telegram_id, track_title, artist, duplicates, playlist_name, track_id)
+        self._confirm = confirm_callback  # async fn(telegram_id, track_title, artist, duplicates, playlist_name, track_id, playlist_spotify_id) — for fuzzy matches
         self._running = False
 
     async def start(self):
@@ -143,13 +145,15 @@ class DuplicateWatcher:
                     try:
                         await conn.execute(
                             """
-                            INSERT INTO playlist_tracks (playlist_id, spotify_track_id, isrc, title, artist, added_by_spotify_id, added_at)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                            INSERT INTO playlist_tracks (playlist_id, spotify_track_id, isrc, title, artist,
+                                                         added_by_spotify_id, added_at, normalized_title, normalized_artist)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                             ON CONFLICT (playlist_id, spotify_track_id) DO NOTHING
                             """,
                             playlist_db_id, track.id, isrc,
                             track.name, track_artist,
                             added_by, item.added_at if hasattr(item, "added_at") else None,
+                            normalize_title(track.name), normalize_artist(track_artist),
                         )
                     except Exception as e:
                         log.warning(f"Failed to save new track: {e}")
@@ -164,7 +168,10 @@ class DuplicateWatcher:
                 if not isrc:
                     isrc = await get_track_isrc(track.id)
 
-                duplicates = await check_duplicate(self._pool, track.id, isrc)
+                duplicates = await check_duplicate(
+                    self._pool, track.id, isrc,
+                    title=track.name, artist=track_artist,
+                )
                 # Filter out current playlist from results
                 duplicates = [d for d in duplicates if d["playlist"] != pl["name"]]
 
@@ -176,7 +183,6 @@ class DuplicateWatcher:
                         )
 
                     if is_thematic:
-                        # Thematic playlists allow duplicates — skip silently
                         continue
 
                     # Find who added it (Telegram ID)
@@ -189,26 +195,41 @@ class DuplicateWatcher:
                             if row:
                                 telegram_id = row["telegram_id"]
 
-                    # Auto-remove from playlist
-                    try:
-                        await sp.playlist_remove(playlist_spotify_id, [f"spotify:track:{track.id}"])
-                        log.info(f"Auto-removed duplicate {track.name} from {pl['name']}")
-                    except Exception as e:
-                        log.error(f"Failed to auto-remove duplicate: {e}")
+                    # Split: exact/isrc → auto-remove, fuzzy → ask user
+                    has_exact = any(d["match"] in ("exact", "isrc") for d in duplicates)
+                    fuzzy_only = [d for d in duplicates if d["match"].startswith("fuzzy_")]
 
-                    # Remove from DB too
-                    async with self._pool.acquire() as conn:
-                        await conn.execute(
-                            "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
-                            playlist_db_id, track.id,
+                    if has_exact:
+                        # Auto-remove
+                        try:
+                            await sp.playlist_remove(playlist_spotify_id, [f"spotify:track:{track.id}"])
+                            log.info(f"Auto-removed duplicate {track.name} from {pl['name']}")
+                        except Exception as e:
+                            log.error(f"Failed to auto-remove duplicate: {e}")
+
+                        async with self._pool.acquire() as conn:
+                            await conn.execute(
+                                "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
+                                playlist_db_id, track.id,
+                            )
+                        await self._notify(
+                            telegram_id=telegram_id,
+                            track_title=track.name,
+                            artist=track_artist,
+                            duplicates=duplicates,
+                            playlist_name=pl["name"],
+                            track_id=track.id,
                         )
-                    await self._notify(
-                        telegram_id=telegram_id,
-                        track_title=track.name,
-                        artist=", ".join(a.name for a in track.artists),
-                        duplicates=duplicates,
-                        playlist_name=pl["name"],
-                        track_id=track.id,
-                    )
+                    elif fuzzy_only and self._confirm:
+                        # Ask user to confirm
+                        await self._confirm(
+                            telegram_id=telegram_id,
+                            track_title=track.name,
+                            artist=track_artist,
+                            duplicates=fuzzy_only,
+                            playlist_name=pl["name"],
+                            track_id=track.id,
+                            playlist_spotify_id=playlist_spotify_id,
+                        )
 
             log.debug(f"Checked playlist {pl['name']}")

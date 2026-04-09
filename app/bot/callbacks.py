@@ -420,3 +420,49 @@ async def on_rerecap(callback: CallbackQuery):
         await session.send_recap_carousel(callback.message.chat.id, result["recap_text"], num)
     else:
         await callback.message.answer(result["message"], parse_mode="HTML")
+
+
+# ── Fuzzy duplicate confirmation ───────────────────────────────
+
+@router.callback_query(F.data.startswith("confirm_dup:"))
+async def on_confirm_dup(callback: CallbackQuery):
+    """User confirmed fuzzy duplicate — remove from playlist."""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer("Ошибка")
+        return
+
+    playlist_spotify_id = parts[1]
+    track_id = parts[2]
+
+    try:
+        from app.spotify.auth import get_spotify
+        sp = await get_spotify()
+        await sp.playlist_remove(playlist_spotify_id, [f"spotify:track:{track_id}"])
+
+        # Remove from DB
+        async with get_pool().acquire() as conn:
+            await conn.execute(
+                "DELETE FROM playlist_tracks WHERE spotify_track_id = $1",
+                track_id,
+            )
+
+        await callback.answer("🗑 Удалено!")
+        await callback.message.edit_text(
+            f"{callback.message.text}\n\n🗑 <b>Удалено</b>",
+            parse_mode="HTML",
+        )
+        log.info(f"Fuzzy duplicate confirmed and removed: {track_id}")
+    except Exception as e:
+        log.error(f"Failed to remove fuzzy duplicate: {e}")
+        await callback.answer(f"Ошибка: {e}", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("keep_dup:"))
+async def on_keep_dup(callback: CallbackQuery):
+    """User said it's not a duplicate — keep it."""
+    await callback.answer("✅ Оставлено")
+    await callback.message.edit_text(
+        f"{callback.message.text}\n\n✅ <b>Оставлено</b>",
+        parse_mode="HTML",
+    )
