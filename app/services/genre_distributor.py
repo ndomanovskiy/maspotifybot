@@ -120,11 +120,11 @@ async def distribute_session_tracks(pool: asyncpg.Pool, session_id: int):
     # Get kept tracks with genres
     async with pool.acquire() as conn:
         tracks = await conn.fetch("""
-            SELECT st.spotify_track_id, pt.genre
+            SELECT st.spotify_track_id, t.genre
             FROM session_tracks st
-            LEFT JOIN playlist_tracks pt ON st.spotify_track_id = pt.spotify_track_id
+            JOIN tracks t ON st.track_id = t.id
             WHERE st.session_id = $1 AND st.vote_result = 'keep'
-            AND pt.genre IS NOT NULL AND pt.genre != 'unknown'
+            AND t.genre IS NOT NULL AND t.genre != 'unknown'
         """, session_id)
 
     # Group by genre playlist (multi-genre: one track → multiple playlists)

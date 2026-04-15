@@ -116,7 +116,7 @@ async def resolve_and_save_genre(pool: asyncpg.Pool, track) -> str | None:
     if genre:
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE playlist_tracks SET genre = $1 WHERE spotify_track_id = $2 AND (genre IS NULL)",
+                "UPDATE tracks SET genre = $1 WHERE spotify_track_id = $2 AND (genre IS NULL)",
                 genre, track.id,
             )
         log.debug(f"Genre for '{track.name}': {genre}")
@@ -128,7 +128,7 @@ async def backfill_genres(pool: asyncpg.Pool) -> dict:
     """Backfill genres for all tracks. Resets and re-resolves via Last.fm + AI."""
     async with pool.acquire() as conn:
         tracks = await conn.fetch(
-            "SELECT DISTINCT spotify_track_id FROM playlist_tracks WHERE genre IS NULL"
+            "SELECT DISTINCT spotify_track_id FROM tracks WHERE genre IS NULL"
         )
 
     if not tracks:
@@ -147,7 +147,7 @@ async def backfill_genres(pool: asyncpg.Pool) -> dict:
 
                 if genre:
                     await conn.execute(
-                        "UPDATE playlist_tracks SET genre = $1 WHERE spotify_track_id = $2",
+                        "UPDATE tracks SET genre = $1 WHERE spotify_track_id = $2",
                         genre, track_id,
                     )
                     resolved += 1

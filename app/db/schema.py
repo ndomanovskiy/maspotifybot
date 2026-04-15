@@ -203,6 +203,95 @@ VERSIONED_MIGRATIONS: list[tuple[int, str, str]] = [
      "CREATE INDEX IF NOT EXISTS idx_playlist_tracks_normalized_artist ON playlist_tracks (normalized_artist)"),
     (36, "idx: playlist_tracks.normalized_title",
      "CREATE INDEX IF NOT EXISTS idx_playlist_tracks_normalized_title ON playlist_tracks (normalized_title)"),
+
+    # --- Schema v2: tracks table (normalize data model) ---
+    (37, "tracks table", """
+        CREATE TABLE IF NOT EXISTS tracks (
+            id SERIAL PRIMARY KEY,
+            spotify_track_id TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            album TEXT,
+            cover_url TEXT,
+            isrc TEXT,
+            genre TEXT,
+            ai_facts TEXT,
+            normalized_title TEXT,
+            normalized_artist TEXT,
+            genre_approved BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )"""),
+    (38, "populate tracks from playlist_tracks", """
+        INSERT INTO tracks (spotify_track_id, title, artist, isrc, genre, ai_facts, normalized_title, normalized_artist)
+        SELECT DISTINCT ON (spotify_track_id)
+            spotify_track_id, title, artist, isrc, genre, ai_facts, normalized_title, normalized_artist
+        FROM playlist_tracks
+        ORDER BY spotify_track_id, id
+        ON CONFLICT (spotify_track_id) DO NOTHING"""),
+    (39, "populate tracks from session_tracks (album, cover_url)", """
+        UPDATE tracks t SET
+            album = st.album,
+            cover_url = st.cover_url
+        FROM session_tracks st
+        WHERE t.spotify_track_id = st.spotify_track_id
+        AND (t.album IS NULL OR t.cover_url IS NULL)"""),
+    (40, "playlist_tracks: add track_id FK column",
+     "ALTER TABLE playlist_tracks ADD COLUMN IF NOT EXISTS track_id INTEGER"),
+    (41, "playlist_tracks: populate track_id", """
+        UPDATE playlist_tracks pt SET track_id = t.id
+        FROM tracks t
+        WHERE pt.spotify_track_id = t.spotify_track_id AND pt.track_id IS NULL"""),
+    (42, "playlist_tracks: add status column",
+     "ALTER TABLE playlist_tracks ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'"),
+    (43, "session_tracks: add track_id FK column",
+     "ALTER TABLE session_tracks ADD COLUMN IF NOT EXISTS track_id INTEGER"),
+    (44, "session_tracks: populate track_id", """
+        UPDATE session_tracks st SET track_id = t.id
+        FROM tracks t
+        WHERE st.spotify_track_id = t.spotify_track_id AND st.track_id IS NULL"""),
+    (45, "idx: tracks.spotify_track_id",
+     "CREATE INDEX IF NOT EXISTS idx_tracks_spotify_track_id ON tracks (spotify_track_id)"),
+    (46, "idx: tracks.normalized_artist",
+     "CREATE INDEX IF NOT EXISTS idx_tracks_normalized_artist ON tracks (normalized_artist)"),
+    (47, "idx: tracks.normalized_title",
+     "CREATE INDEX IF NOT EXISTS idx_tracks_normalized_title ON tracks (normalized_title)"),
+    (48, "idx: tracks.genre_approved",
+     "CREATE INDEX IF NOT EXISTS idx_tracks_genre_approved ON tracks (genre_approved)"),
+    (49, "idx: playlist_tracks.track_id",
+     "CREATE INDEX IF NOT EXISTS idx_playlist_tracks_track_id ON playlist_tracks (track_id)"),
+    (50, "idx: session_tracks.track_id",
+     "CREATE INDEX IF NOT EXISTS idx_session_tracks_track_id ON session_tracks (track_id)"),
+
+    # --- sessions: normalize playlist reference ---
+    (51, "sessions: add playlist_id FK column",
+     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS playlist_id INTEGER"),
+    (52, "sessions: populate playlist_id from playlist_spotify_id", """
+        UPDATE sessions s SET playlist_id = p.id
+        FROM playlists p
+        WHERE s.playlist_spotify_id = p.spotify_id AND s.playlist_id IS NULL"""),
+    (53, "idx: sessions.playlist_id",
+     "CREATE INDEX IF NOT EXISTS idx_sessions_playlist_id ON sessions (playlist_id)"),
+
+    # --- Normalize user references ---
+    (54, "session_participants: add user_id FK column",
+     "ALTER TABLE session_participants ADD COLUMN IF NOT EXISTS user_id INTEGER"),
+    (55, "session_participants: populate user_id from telegram_id", """
+        UPDATE session_participants sp SET user_id = u.id
+        FROM users u
+        WHERE sp.telegram_id = u.telegram_id AND sp.user_id IS NULL"""),
+    (56, "votes: add participant_id FK column",
+     "ALTER TABLE votes ADD COLUMN IF NOT EXISTS participant_id INTEGER"),
+    (57, "votes: populate participant_id", """
+        UPDATE votes v SET participant_id = sp.id
+        FROM session_participants sp
+        JOIN session_tracks st ON st.session_id = sp.session_id
+        WHERE v.session_track_id = st.id
+        AND v.telegram_id = sp.telegram_id
+        AND v.participant_id IS NULL"""),
+    (58, "idx: session_participants.user_id",
+     "CREATE INDEX IF NOT EXISTS idx_session_participants_user_id ON session_participants (user_id)"),
+    (59, "idx: votes.participant_id",
+     "CREATE INDEX IF NOT EXISTS idx_votes_participant_id ON votes (participant_id)"),
 ]
 
 # Note: backfill of normalized_title/normalized_artist for existing tracks

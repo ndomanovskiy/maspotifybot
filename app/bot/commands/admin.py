@@ -81,17 +81,18 @@ async def cmd_session(message: Message):
     # Find upcoming playlist
     async with get_pool().acquire() as conn:
         upcoming = await conn.fetchrow(
-            "SELECT spotify_id, name FROM playlists WHERE status = 'upcoming' ORDER BY number DESC LIMIT 1"
+            "SELECT id, spotify_id, name FROM playlists WHERE status = 'upcoming' ORDER BY number DESC LIMIT 1"
         )
 
     if not upcoming:
         await message.answer("Нет upcoming плейлиста. Сначала /create_next")
         return
 
-    playlist_id = upcoming["spotify_id"]
+    pl_db_id = upcoming["id"]
+    playlist_spotify_id = upcoming["spotify_id"]
     playlist_name = upcoming["name"]
 
-    if await check_duplicate_session(get_pool(), playlist_id):
+    if await check_duplicate_session(get_pool(), playlist_spotify_id):
         await reply(message, "🚫 Для этого плейлиста уже есть сессия!")
         return
 
@@ -111,11 +112,11 @@ async def cmd_session(message: Message):
 
     async with get_pool().acquire() as conn:
         row = await conn.fetchrow(
-            "INSERT INTO sessions (playlist_spotify_id, playlist_name) VALUES ($1, $2) RETURNING id",
-            playlist_id, playlist_name,
+            "INSERT INTO sessions (playlist_id, playlist_spotify_id, playlist_name) VALUES ($1, $2, $3) RETURNING id",
+            pl_db_id, playlist_spotify_id, playlist_name,
         )
         session.active_session_id = row["id"]
-        session.active_playlist_id = playlist_id
+        session.active_playlist_id = playlist_spotify_id
         session.played_track_ids = set()
 
         await conn.execute(
@@ -126,15 +127,15 @@ async def cmd_session(message: Message):
     # Clear queue
     try:
         sp = await get_spotify()
-        pl = await sp.playlist(playlist_id)
+        pl = await sp.playlist(playlist_spotify_id)
         playlist_name = pl.name
-        await sp.playback_start_context(f"spotify:playlist:{playlist_id}")
+        await sp.playback_start_context(f"spotify:playlist:{playlist_spotify_id}")
         await asyncio.sleep(0.5)
         await sp.playback_pause()
         log.info(f"Queue cleared for playlist {playlist_name}")
     except Exception as e:
         log.warning(f"Failed to clear queue: {e}")
-        playlist_name = playlist_id
+        playlist_name = playlist_spotify_id
 
     start_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="▶️ Запустить прослушивание!", callback_data="start_listening")
@@ -533,23 +534,26 @@ async def _playlist_status(message: Message):
     async with get_pool().acquire() as conn:
         stats = await conn.fetchrow("""
             SELECT COUNT(*) as total,
-                   COUNT(*) FILTER (WHERE ai_facts IS NOT NULL) as with_facts,
-                   COUNT(*) FILTER (WHERE ai_facts IS NULL) as no_facts,
-                   COUNT(*) FILTER (WHERE genre IS NOT NULL AND genre != 'unknown') as with_genre,
-                   COUNT(*) FILTER (WHERE genre IS NULL OR genre = 'unknown') as no_genre
-            FROM playlist_tracks WHERE playlist_id = $1
+                   COUNT(*) FILTER (WHERE t.ai_facts IS NOT NULL) as with_facts,
+                   COUNT(*) FILTER (WHERE t.ai_facts IS NULL) as no_facts,
+                   COUNT(*) FILTER (WHERE t.genre IS NOT NULL AND t.genre != 'unknown') as with_genre,
+                   COUNT(*) FILTER (WHERE t.genre IS NULL OR t.genre = 'unknown') as no_genre
+            FROM playlist_tracks pt JOIN tracks t ON pt.track_id = t.id
+            WHERE pt.playlist_id = $1
         """, pl["id"])
 
         no_genre_tracks = await conn.fetch("""
-            SELECT title, artist FROM playlist_tracks
-            WHERE playlist_id = $1 AND (genre IS NULL OR genre = 'unknown')
-            ORDER BY title
+            SELECT t.title, t.artist FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            WHERE pt.playlist_id = $1 AND (t.genre IS NULL OR t.genre = 'unknown')
+            ORDER BY t.title
         """, pl["id"])
 
         no_facts_tracks = await conn.fetch("""
-            SELECT title, artist FROM playlist_tracks
-            WHERE playlist_id = $1 AND ai_facts IS NULL
-            ORDER BY title
+            SELECT t.title, t.artist FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            WHERE pt.playlist_id = $1 AND t.ai_facts IS NULL
+            ORDER BY t.title
         """, pl["id"])
 
     lines = [f"📋 <b>{pl['name']}</b>\n"]
@@ -655,7 +659,7 @@ async def on_backfill_genres(message: Message):
 
     if reset:
         async with get_pool().acquire() as conn:
-            await conn.execute("UPDATE playlist_tracks SET genre = NULL")
+            await conn.execute("UPDATE tracks SET genre = NULL")
         await message.answer("🔄 Все жанры сброшены. Запускаю бэкфилл через Last.fm + AI...\n\n⚠️ Если бэкфилл прервётся — запусти /backfill_genres повторно.")
     else:
         await message.answer("⏳ Запускаю бэкфилл жанров (только пустые)...")
@@ -686,12 +690,12 @@ async def on_backfill_normalized(message: Message):
     try:
         async with get_pool().acquire() as conn:
             tracks = await conn.fetch(
-                "SELECT id, title, artist FROM playlist_tracks WHERE normalized_title IS NULL OR normalized_artist IS NULL"
+                "SELECT id, title, artist FROM tracks WHERE normalized_title IS NULL OR normalized_artist IS NULL"
             )
             updated = 0
             for t in tracks:
                 await conn.execute(
-                    "UPDATE playlist_tracks SET normalized_title = $1, normalized_artist = $2 WHERE id = $3",
+                    "UPDATE tracks SET normalized_title = $1, normalized_artist = $2 WHERE id = $3",
                     normalize_title(t["title"]), normalize_artist(t["artist"]), t["id"],
                 )
                 updated += 1

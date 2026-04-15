@@ -273,10 +273,10 @@ async def _generate_and_save_recap(
         tracks_data = [dict(r) for r in await conn.fetch(
             """SELECT st.id, st.title, st.artist, st.vote_result, st.added_by_spotify_id,
                       COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, st.added_by_spotify_id, '?') as added_by,
-                      pt.genre, pt.ai_facts
+                      t.genre, t.ai_facts
                FROM session_tracks st
                LEFT JOIN users u ON st.added_by_spotify_id = u.spotify_id
-               LEFT JOIN playlist_tracks pt ON st.spotify_track_id = pt.spotify_track_id
+               LEFT JOIN tracks t ON st.track_id = t.id
                WHERE st.session_id = $1
                ORDER BY st.created_at""",
             session_id,
