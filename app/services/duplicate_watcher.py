@@ -260,4 +260,15 @@ class DuplicateWatcher:
                             playlist_spotify_id=playlist_spotify_id,
                         )
 
+            # Cleanup: remove DB entries for tracks no longer in Spotify playlist
+            spotify_ids = {item.track.id for item in items.items if item.track}
+            stale_ids = known_ids - spotify_ids
+            if stale_ids:
+                async with self._pool.acquire() as conn:
+                    await conn.execute(
+                        "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = ANY($2)",
+                        playlist_db_id, list(stale_ids),
+                    )
+                log.info(f"Cleaned {len(stale_ids)} stale track(s) from '{pl['name']}': {stale_ids}")
+
             log.debug(f"Checked playlist {pl['name']}")
