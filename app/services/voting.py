@@ -102,15 +102,28 @@ async def skip_to_next():
 
 
 async def create_session_track(pool: asyncpg.Pool, session_id: int, track_info) -> int:
-    """Insert a new track into session_tracks, return its id."""
+    """Insert a new track into session_tracks, return its id.
+
+    Also upserts into tracks table to ensure track_id FK is populated.
+    """
     async with pool.acquire() as conn:
+        # Upsert into tracks to get track_id
+        track_db_id = await conn.fetchval(
+            """INSERT INTO tracks (spotify_track_id, title, artist, album, cover_url)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (spotify_track_id) DO UPDATE SET album = COALESCE(tracks.album, $4), cover_url = COALESCE(tracks.cover_url, $5)
+               RETURNING id""",
+            track_info.track_id, track_info.title, track_info.artist,
+            track_info.album, track_info.cover_url,
+        )
+
         row = await conn.fetchrow(
             """
-            INSERT INTO session_tracks (session_id, spotify_track_id, title, artist, album, cover_url, added_by_spotify_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO session_tracks (session_id, track_id, spotify_track_id, title, artist, album, cover_url, added_by_spotify_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id
             """,
-            session_id, track_info.track_id, track_info.title, track_info.artist,
+            session_id, track_db_id, track_info.track_id, track_info.title, track_info.artist,
             track_info.album, track_info.cover_url, track_info.added_by,
         )
         return row["id"]

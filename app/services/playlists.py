@@ -58,16 +58,34 @@ async def import_playlist(pool: asyncpg.Pool, playlist_spotify_id: str) -> dict:
                 try:
                     title = track.name
                     artist = ", ".join(a.name for a in track.artists)
+
+                    # Upsert into tracks table
+                    track_row = await conn.fetchrow(
+                        """
+                        INSERT INTO tracks (spotify_track_id, title, artist, isrc,
+                                            normalized_title, normalized_artist)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (spotify_track_id) DO UPDATE
+                        SET title = EXCLUDED.title, artist = EXCLUDED.artist,
+                            isrc = COALESCE(EXCLUDED.isrc, tracks.isrc),
+                            normalized_title = EXCLUDED.normalized_title,
+                            normalized_artist = EXCLUDED.normalized_artist
+                        RETURNING id
+                        """,
+                        track.id, title, artist, isrc,
+                        normalize_title(title), normalize_artist(artist),
+                    )
+                    track_db_id = track_row["id"]
+
+                    # Insert into playlist_tracks with FK to tracks
                     await conn.execute(
                         """
-                        INSERT INTO playlist_tracks (playlist_id, spotify_track_id, isrc, title, artist,
-                                                     added_by_spotify_id, added_at, normalized_title, normalized_artist)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                        ON CONFLICT (playlist_id, spotify_track_id) DO NOTHING
+                        INSERT INTO playlist_tracks (playlist_id, track_id, spotify_track_id,
+                                                     added_by_spotify_id, added_at)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (playlist_id, spotify_track_id) DO UPDATE SET track_id = $2
                         """,
-                        playlist_db_id, track.id, isrc,
-                        title, artist, added_by, added_at,
-                        normalize_title(title), normalize_artist(artist),
+                        playlist_db_id, track_db_id, track.id, added_by, added_at,
                     )
                     imported += 1
 
@@ -123,10 +141,12 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
         # 1. Exact Track ID match
         rows = await conn.fetch(
             """
-            SELECT pt.spotify_track_id, pt.title, pt.artist,
+            SELECT t.spotify_track_id, t.title, t.artist,
                    p.id as playlist_id, p.name as playlist_name, p.url as playlist_url
-            FROM playlist_tracks pt JOIN playlists p ON pt.playlist_id = p.id
-            WHERE pt.spotify_track_id = $1
+            FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            JOIN playlists p ON pt.playlist_id = p.id
+            WHERE t.spotify_track_id = $1
             """,
             spotify_track_id,
         )
@@ -139,10 +159,12 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
         if isrc and not duplicates:
             rows = await conn.fetch(
                 """
-                SELECT pt.spotify_track_id, pt.title, pt.artist,
+                SELECT t.spotify_track_id, t.title, t.artist,
                        p.id as playlist_id, p.name as playlist_name, p.url as playlist_url
-                FROM playlist_tracks pt JOIN playlists p ON pt.playlist_id = p.id
-                WHERE pt.isrc = $1 AND pt.spotify_track_id != $2
+                FROM playlist_tracks pt
+                JOIN tracks t ON pt.track_id = t.id
+                JOIN playlists p ON pt.playlist_id = p.id
+                WHERE t.isrc = $1 AND t.spotify_track_id != $2
                 """,
                 isrc, spotify_track_id,
             )
@@ -159,11 +181,13 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
             # Find candidates with same normalized artist
             candidates = await conn.fetch(
                 """
-                SELECT pt.spotify_track_id, pt.title, pt.artist,
-                       pt.normalized_title, pt.normalized_artist,
+                SELECT t.spotify_track_id, t.title, t.artist,
+                       t.normalized_title, t.normalized_artist,
                        p.id as playlist_id, p.name as playlist_name, p.url as playlist_url
-                FROM playlist_tracks pt JOIN playlists p ON pt.playlist_id = p.id
-                WHERE pt.normalized_artist = $1 AND pt.spotify_track_id != $2
+                FROM playlist_tracks pt
+                JOIN tracks t ON pt.track_id = t.id
+                JOIN playlists p ON pt.playlist_id = p.id
+                WHERE t.normalized_artist = $1 AND t.spotify_track_id != $2
                 """,
                 norm_artist, spotify_track_id,
             )

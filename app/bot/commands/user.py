@@ -2,6 +2,7 @@
 /stats, /mystats, /history, /join, /leave, /secret."""
 
 import html
+import logging
 import re
 
 from aiogram import Router
@@ -12,11 +13,14 @@ from app.config import settings
 from app.services.playlists import get_next_playlist, check_duplicate, get_track_isrc
 from app.services.track_formatter import format_track, format_album
 from app.services.ai import analyze_easter_egg
+from app.services.genre_distributor import check_previously_dropped
 from app.bot.core import (
-    bot, get_pool, is_admin, require_registered, extract_spotify_id,
+    bot, get_pool, is_admin, is_registered, require_registered, extract_spotify_id,
     reply, send,
 )
 from app.bot.session_manager import session
+
+log = logging.getLogger(__name__)
 
 router = Router()
 
@@ -256,10 +260,11 @@ async def cmd_stats(message: Message):
         """)
 
         genre_rows = await conn.fetch("""
-            SELECT genre, COUNT(*) as cnt
-            FROM playlist_tracks
-            WHERE genre IS NOT NULL AND genre <> ''
-            GROUP BY genre ORDER BY cnt DESC
+            SELECT t.genre, COUNT(*) as cnt
+            FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            WHERE t.genre IS NOT NULL AND t.genre <> ''
+            GROUP BY t.genre ORDER BY cnt DESC
         """)
 
     genre_totals: dict[str, int] = {}
@@ -282,11 +287,12 @@ async def cmd_stats(message: Message):
     async with get_pool().acquire() as conn:
         all_user_genres = await conn.fetch("""
             SELECT COALESCE(u.telegram_username, u.telegram_name) as name,
-                   pt.genre, COUNT(*) as cnt
+                   t.genre, COUNT(*) as cnt
             FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
             JOIN users u ON u.spotify_id = pt.added_by_spotify_id
-            WHERE pt.genre IS NOT NULL AND pt.genre <> ''
-            GROUP BY name, pt.genre ORDER BY name, cnt DESC
+            WHERE t.genre IS NOT NULL AND t.genre <> ''
+            GROUP BY name, t.genre ORDER BY name, cnt DESC
         """)
 
     user_genre_map: dict[str, dict[str, int]] = {}
@@ -351,9 +357,11 @@ async def cmd_mystats(message: Message):
         """, spotify_id) or 0
 
         genre_rows = await conn.fetch("""
-            SELECT genre, COUNT(*) as cnt FROM playlist_tracks
-            WHERE added_by_spotify_id = $1 AND genre IS NOT NULL AND genre <> ''
-            GROUP BY genre ORDER BY cnt DESC
+            SELECT t.genre, COUNT(*) as cnt
+            FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            WHERE pt.added_by_spotify_id = $1 AND t.genre IS NOT NULL AND t.genre <> ''
+            GROUP BY t.genre ORDER BY cnt DESC
         """, spotify_id)
 
     genre_totals: dict[str, int] = {}
@@ -403,12 +411,14 @@ async def _show_history_page(message_or_callback, offset: int):
     async with get_pool().acquire() as conn:
         total = await conn.fetchval("SELECT COUNT(*) FROM sessions")
         sessions = await conn.fetch("""
-            SELECT s.id, s.playlist_name, s.started_at, s.ended_at,
+            SELECT s.id, COALESCE(p.name, s.playlist_name) as playlist_name,
+                   s.started_at, s.ended_at,
                    (SELECT COUNT(*) FROM session_tracks WHERE session_id = s.id) as track_count,
                    (SELECT COUNT(*) FROM session_tracks WHERE session_id = s.id AND vote_result = 'keep') as kept,
                    (SELECT COUNT(*) FROM session_tracks WHERE session_id = s.id AND vote_result = 'drop') as dropped,
                    (SELECT COUNT(*) FROM session_participants WHERE session_id = s.id) as participants
             FROM sessions s
+            LEFT JOIN playlists p ON s.playlist_id = p.id
             ORDER BY s.started_at DESC
             LIMIT $1 OFFSET $2
         """, HISTORY_PAGE_SIZE, offset)
@@ -462,9 +472,12 @@ async def _show_session_details(message: Message, session_num: int):
     """Show detailed view of a specific session."""
     async with get_pool().acquire() as conn:
         sess = await conn.fetchrow("""
-            SELECT s.id, s.playlist_name, s.started_at, s.ended_at,
+            SELECT s.id, COALESCE(p.name, s.playlist_name) as playlist_name,
+                   s.started_at, s.ended_at,
                    (SELECT COUNT(*) FROM session_participants WHERE session_id = s.id) as participants
-            FROM sessions s WHERE s.id = $1
+            FROM sessions s
+            LEFT JOIN playlists p ON s.playlist_id = p.id
+            WHERE s.id = $1
         """, session_num)
 
         if not sess:
@@ -472,9 +485,13 @@ async def _show_session_details(message: Message, session_num: int):
             return
 
         tracks = await conn.fetch("""
-            SELECT st.spotify_track_id, st.title, st.artist, st.vote_result,
+            SELECT COALESCE(t.spotify_track_id, st.spotify_track_id) as spotify_track_id,
+                   COALESCE(t.title, st.title) as title,
+                   COALESCE(t.artist, st.artist) as artist,
+                   st.vote_result,
                    COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, '?') as added_by
             FROM session_tracks st
+            LEFT JOIN tracks t ON st.track_id = t.id
             LEFT JOIN users u ON st.added_by_spotify_id = u.spotify_id
             WHERE st.session_id = $1
             ORDER BY st.position, st.id
@@ -575,7 +592,7 @@ async def cmd_secret(message: Message):
     async with get_pool().acquire() as conn:
         upcoming_pl = await conn.fetchrow(
             """SELECT p.id FROM playlists p
-               JOIN sessions s ON s.playlist_spotify_id = p.spotify_id
+               JOIN sessions s ON s.playlist_id = p.id
                WHERE s.id = $1""",
             session_id,
         )
@@ -634,7 +651,10 @@ async def cmd_secret(message: Message):
             )
             if spotify_id:
                 user_tracks = [dict(r) for r in await conn.fetch(
-                    "SELECT title, artist FROM playlist_tracks WHERE playlist_id = $1 AND added_by_spotify_id = $2",
+                    """SELECT t.title, t.artist
+                       FROM playlist_tracks pt
+                       JOIN tracks t ON pt.track_id = t.id
+                       WHERE pt.playlist_id = $1 AND pt.added_by_spotify_id = $2""",
                     upcoming_pl["id"], spotify_id,
                 )]
 
@@ -671,3 +691,60 @@ async def on_secret_clarification(message: Message):
         )
 
     await reply(message, f"🥚 Секрет обновлён!\n🔒 <i>{html.escape(updated_secret)}</i>")
+
+
+# ── Auto duplicate check on Spotify link ───────────────────────
+
+@router.message(lambda m: m.text and "open.spotify.com/track/" in m.text and not m.text.startswith("/"))
+async def on_spotify_link(message: Message):
+    """Auto-check duplicate when user sends a Spotify track link."""
+    if not await is_registered(message.from_user.id):
+        return
+
+    track_id = extract_spotify_id(message.text, "track")
+    if not track_id:
+        return
+
+    # Fetch track info
+    title, artist = None, None
+    try:
+        from app.spotify.auth import get_spotify
+        sp = await get_spotify()
+        track = await sp.track(track_id)
+        title = track.name
+        artist = ", ".join(a.name for a in track.artists)
+    except Exception as e:
+        log.debug(f"Auto-check: failed to fetch track {track_id}: {e}")
+        return
+
+    isrc = await get_track_isrc(track_id)
+    duplicates = await check_duplicate(get_pool(), track_id, isrc, title=title, artist=artist)
+
+    # Also check if previously dropped
+    drops = await check_previously_dropped(get_pool(), track_id)
+
+    if not duplicates and not drops:
+        return  # No issues — stay silent
+
+    parts = []
+    if duplicates:
+        match_labels = {
+            "exact": "🎯 точное совпадение",
+            "isrc": "🔗 тот же трек (другой альбом)",
+            "fuzzy_exact": "🔍 совпадение после нормализации",
+            "fuzzy_contains": "🔍 название содержится",
+            "fuzzy_levenshtein": "🔍 похожее название",
+        }
+        lines = []
+        for d in duplicates:
+            label = match_labels.get(d["match"], d["match"])
+            track_display = format_track(d["title"], d["artist"])
+            lines.append(f"  {label} — {track_display}\n  в {d['playlist']}")
+        parts.append(f"⚠️ <b>Дубликат!</b>\n" + "\n".join(lines))
+
+    if drops:
+        drop_lines = [f"  ❌ {d['playlist']} ({d['date']})" for d in drops]
+        parts.append(f"⚠️ <b>Ранее дропнут:</b>\n" + "\n".join(drop_lines))
+
+    track_fmt = format_track(title or "?", artist or "?", track_id)
+    await reply(message, f"🎵 {track_fmt}\n\n" + "\n\n".join(parts))
