@@ -68,7 +68,9 @@ class DuplicateWatcher:
         """Load all known track IDs for a playlist from DB in one query."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT spotify_track_id FROM playlist_tracks WHERE playlist_id = $1",
+                """SELECT t.spotify_track_id FROM playlist_tracks pt
+                   JOIN tracks t ON pt.track_id = t.id
+                   WHERE pt.playlist_id = $1""",
                 playlist_db_id,
             )
         return {row["spotify_track_id"] for row in rows}
@@ -78,10 +80,11 @@ class DuplicateWatcher:
         async with self._pool.acquire() as conn:
             tracks = await conn.fetch(
                 """
-                SELECT pt.id, pt.spotify_track_id, pt.title, pt.artist
-                FROM playlist_tracks pt
+                SELECT t.id, t.spotify_track_id, t.title, t.artist
+                FROM tracks t
+                JOIN playlist_tracks pt ON pt.track_id = t.id
                 JOIN playlists p ON pt.playlist_id = p.id
-                WHERE p.status = 'upcoming' AND pt.ai_facts IS NULL
+                WHERE p.status = 'upcoming' AND t.ai_facts IS NULL
                 """
             )
 
@@ -95,7 +98,7 @@ class DuplicateWatcher:
                     facts = await generate_track_facts(t["title"], t["artist"], "")
                     if facts:
                         await conn.execute(
-                            "UPDATE playlist_tracks SET ai_facts = $1 WHERE id = $2",
+                            "UPDATE tracks SET ai_facts = $1 WHERE id = $2",
                             facts, t["id"],
                         )
                         log.info(f"Generated facts for '{t['title']}'")
@@ -145,17 +148,22 @@ class DuplicateWatcher:
 
                 async with self._pool.acquire() as conn:
                     try:
-                        await conn.execute(
-                            """
-                            INSERT INTO playlist_tracks (playlist_id, spotify_track_id, isrc, title, artist,
-                                                         added_by_spotify_id, added_at, normalized_title, normalized_artist)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                            ON CONFLICT (playlist_id, spotify_track_id) DO NOTHING
-                            """,
-                            playlist_db_id, track.id, isrc,
-                            track.name, track_artist,
-                            added_by, item.added_at if hasattr(item, "added_at") else None,
+                        # Upsert into tracks
+                        track_db_id = await conn.fetchval(
+                            """INSERT INTO tracks (spotify_track_id, title, artist, isrc, normalized_title, normalized_artist)
+                               VALUES ($1, $2, $3, $4, $5, $6)
+                               ON CONFLICT (spotify_track_id) DO UPDATE SET title = $2, artist = $3
+                               RETURNING id""",
+                            track.id, track.name, track_artist, isrc,
                             normalize_title(track.name), normalize_artist(track_artist),
+                        )
+                        # Insert playlist_tracks link
+                        await conn.execute(
+                            """INSERT INTO playlist_tracks (playlist_id, track_id, spotify_track_id, added_by_spotify_id, added_at)
+                               VALUES ($1, $2, $3, $4, $5)
+                               ON CONFLICT (playlist_id, spotify_track_id) DO NOTHING""",
+                            playlist_db_id, track_db_id, track.id, added_by,
+                            item.added_at if hasattr(item, "added_at") else None,
                         )
                     except Exception as e:
                         log.warning(f"Failed to save new track: {e}")
@@ -259,5 +267,16 @@ class DuplicateWatcher:
                             track_id=track.id,
                             playlist_spotify_id=playlist_spotify_id,
                         )
+
+            # Cleanup: remove DB entries for tracks no longer in Spotify playlist
+            spotify_ids = {item.track.id for item in items.items if item.track}
+            stale_ids = known_ids - spotify_ids
+            if stale_ids:
+                async with self._pool.acquire() as conn:
+                    deleted = await conn.execute(
+                        "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = ANY($2)",
+                        playlist_db_id, list(stale_ids),
+                    )
+                log.info(f"Cleaned {len(stale_ids)} stale track(s) from '{pl['name']}': {stale_ids}")
 
             log.debug(f"Checked playlist {pl['name']}")

@@ -136,7 +136,7 @@ async def on_vote(callback: CallbackQuery):
     if vote_result == "drop" and session.active_playlist_id:
         async with get_pool().acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT spotify_track_id FROM session_tracks WHERE id = $1", session_track_id
+                "SELECT t.spotify_track_id FROM session_tracks st JOIN tracks t ON st.track_id = t.id WHERE st.id = $1", session_track_id
             )
         if row:
             try:
@@ -175,7 +175,7 @@ async def on_regen_facts(callback: CallbackQuery):
 
     async with get_pool().acquire() as conn:
         track = await conn.fetchrow(
-            "SELECT spotify_track_id, title, artist FROM session_tracks WHERE id = $1",
+            "SELECT t.spotify_track_id, t.title, t.artist FROM session_tracks st JOIN tracks t ON st.track_id = t.id WHERE st.id = $1",
             session_track_id,
         )
 
@@ -184,7 +184,7 @@ async def on_regen_facts(callback: CallbackQuery):
 
     async with get_pool().acquire() as conn:
         await conn.execute(
-            "UPDATE playlist_tracks SET ai_facts = NULL WHERE spotify_track_id = $1",
+            "UPDATE tracks SET ai_facts = NULL WHERE spotify_track_id = $1",
             track["spotify_track_id"],
         )
 
@@ -193,7 +193,7 @@ async def on_regen_facts(callback: CallbackQuery):
     if facts:
         async with get_pool().acquire() as conn:
             await conn.execute(
-                "UPDATE playlist_tracks SET ai_facts = $1 WHERE spotify_track_id = $2",
+                "UPDATE tracks SET ai_facts = $1 WHERE spotify_track_id = $2",
                 facts, track["spotify_track_id"],
             )
 
@@ -381,7 +381,7 @@ async def on_recap_page(callback: CallbackQuery):
         if pl:
             recap_text = await conn.fetchval(
                 """SELECT recap_text FROM sessions
-                   WHERE playlist_spotify_id = $1 ORDER BY id DESC LIMIT 1""",
+                   WHERE playlist_id = (SELECT id FROM playlists WHERE spotify_id = $1) ORDER BY id DESC LIMIT 1""",
                 pl["spotify_id"],
             )
 

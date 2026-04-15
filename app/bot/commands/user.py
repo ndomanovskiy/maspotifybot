@@ -256,10 +256,11 @@ async def cmd_stats(message: Message):
         """)
 
         genre_rows = await conn.fetch("""
-            SELECT genre, COUNT(*) as cnt
-            FROM playlist_tracks
-            WHERE genre IS NOT NULL AND genre <> ''
-            GROUP BY genre ORDER BY cnt DESC
+            SELECT t.genre, COUNT(*) as cnt
+            FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            WHERE t.genre IS NOT NULL AND t.genre <> ''
+            GROUP BY t.genre ORDER BY cnt DESC
         """)
 
     genre_totals: dict[str, int] = {}
@@ -282,11 +283,12 @@ async def cmd_stats(message: Message):
     async with get_pool().acquire() as conn:
         all_user_genres = await conn.fetch("""
             SELECT COALESCE(u.telegram_username, u.telegram_name) as name,
-                   pt.genre, COUNT(*) as cnt
+                   t.genre, COUNT(*) as cnt
             FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
             JOIN users u ON u.spotify_id = pt.added_by_spotify_id
-            WHERE pt.genre IS NOT NULL AND pt.genre <> ''
-            GROUP BY name, pt.genre ORDER BY name, cnt DESC
+            WHERE t.genre IS NOT NULL AND t.genre <> ''
+            GROUP BY name, t.genre ORDER BY name, cnt DESC
         """)
 
     user_genre_map: dict[str, dict[str, int]] = {}
@@ -351,9 +353,11 @@ async def cmd_mystats(message: Message):
         """, spotify_id) or 0
 
         genre_rows = await conn.fetch("""
-            SELECT genre, COUNT(*) as cnt FROM playlist_tracks
-            WHERE added_by_spotify_id = $1 AND genre IS NOT NULL AND genre <> ''
-            GROUP BY genre ORDER BY cnt DESC
+            SELECT t.genre, COUNT(*) as cnt
+            FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            WHERE pt.added_by_spotify_id = $1 AND t.genre IS NOT NULL AND t.genre <> ''
+            GROUP BY t.genre ORDER BY cnt DESC
         """, spotify_id)
 
     genre_totals: dict[str, int] = {}
@@ -403,12 +407,14 @@ async def _show_history_page(message_or_callback, offset: int):
     async with get_pool().acquire() as conn:
         total = await conn.fetchval("SELECT COUNT(*) FROM sessions")
         sessions = await conn.fetch("""
-            SELECT s.id, s.playlist_name, s.started_at, s.ended_at,
+            SELECT s.id, COALESCE(p.name, s.playlist_name) as playlist_name,
+                   s.started_at, s.ended_at,
                    (SELECT COUNT(*) FROM session_tracks WHERE session_id = s.id) as track_count,
                    (SELECT COUNT(*) FROM session_tracks WHERE session_id = s.id AND vote_result = 'keep') as kept,
                    (SELECT COUNT(*) FROM session_tracks WHERE session_id = s.id AND vote_result = 'drop') as dropped,
                    (SELECT COUNT(*) FROM session_participants WHERE session_id = s.id) as participants
             FROM sessions s
+            LEFT JOIN playlists p ON s.playlist_id = p.id
             ORDER BY s.started_at DESC
             LIMIT $1 OFFSET $2
         """, HISTORY_PAGE_SIZE, offset)
@@ -462,9 +468,12 @@ async def _show_session_details(message: Message, session_num: int):
     """Show detailed view of a specific session."""
     async with get_pool().acquire() as conn:
         sess = await conn.fetchrow("""
-            SELECT s.id, s.playlist_name, s.started_at, s.ended_at,
+            SELECT s.id, COALESCE(p.name, s.playlist_name) as playlist_name,
+                   s.started_at, s.ended_at,
                    (SELECT COUNT(*) FROM session_participants WHERE session_id = s.id) as participants
-            FROM sessions s WHERE s.id = $1
+            FROM sessions s
+            LEFT JOIN playlists p ON s.playlist_id = p.id
+            WHERE s.id = $1
         """, session_num)
 
         if not sess:
@@ -472,9 +481,13 @@ async def _show_session_details(message: Message, session_num: int):
             return
 
         tracks = await conn.fetch("""
-            SELECT st.spotify_track_id, st.title, st.artist, st.vote_result,
+            SELECT COALESCE(t.spotify_track_id, st.spotify_track_id) as spotify_track_id,
+                   COALESCE(t.title, st.title) as title,
+                   COALESCE(t.artist, st.artist) as artist,
+                   st.vote_result,
                    COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, '?') as added_by
             FROM session_tracks st
+            LEFT JOIN tracks t ON st.track_id = t.id
             LEFT JOIN users u ON st.added_by_spotify_id = u.spotify_id
             WHERE st.session_id = $1
             ORDER BY st.position, st.id
@@ -575,7 +588,7 @@ async def cmd_secret(message: Message):
     async with get_pool().acquire() as conn:
         upcoming_pl = await conn.fetchrow(
             """SELECT p.id FROM playlists p
-               JOIN sessions s ON s.playlist_spotify_id = p.spotify_id
+               JOIN sessions s ON s.playlist_id = p.id
                WHERE s.id = $1""",
             session_id,
         )
@@ -634,7 +647,10 @@ async def cmd_secret(message: Message):
             )
             if spotify_id:
                 user_tracks = [dict(r) for r in await conn.fetch(
-                    "SELECT title, artist FROM playlist_tracks WHERE playlist_id = $1 AND added_by_spotify_id = $2",
+                    """SELECT t.title, t.artist
+                       FROM playlist_tracks pt
+                       JOIN tracks t ON pt.track_id = t.id
+                       WHERE pt.playlist_id = $1 AND pt.added_by_spotify_id = $2""",
                     upcoming_pl["id"], spotify_id,
                 )]
 

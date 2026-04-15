@@ -65,13 +65,16 @@ class FakeStore:
 
     Tables:
       playlists: list[dict]
-      playlist_tracks: list[dict] (auto-increment id)
+      tracks: list[dict] (auto-increment id) — canonical track data
+      playlist_tracks: list[dict] (auto-increment id) — playlist↔track links
       users: list[dict]
     """
 
     playlists: list[dict] = field(default_factory=list)
+    tracks: list[dict] = field(default_factory=list)
     playlist_tracks: list[dict] = field(default_factory=list)
     users: list[dict] = field(default_factory=list)
+    _next_track_id: int = 1
     _next_pt_id: int = 1
 
     # --- helpers ---
@@ -86,20 +89,75 @@ class FakeStore:
     def add_track(self, *, playlist_id: int, spotify_track_id: str, title: str = "",
                   artist: str = "", isrc: str | None = None, ai_facts: str | None = None,
                   added_by_spotify_id: str | None = None) -> dict:
-        rec = {"id": self._next_pt_id, "playlist_id": playlist_id,
-               "spotify_track_id": spotify_track_id, "title": title, "artist": artist,
-               "isrc": isrc, "ai_facts": ai_facts, "added_by_spotify_id": added_by_spotify_id,
-               "added_at": None}
+        """Add a track to both `tracks` and `playlist_tracks` tables.
+
+        Returns a composite dict that merges track-level and link-level fields,
+        keeping backward compat with existing tests that read title/artist/ai_facts
+        from the returned dict and also expect store.get_track() to work.
+        """
+        # Upsert into tracks table
+        track_rec = None
+        for t in self.tracks:
+            if t["spotify_track_id"] == spotify_track_id:
+                track_rec = t
+                break
+        if track_rec is None:
+            track_rec = {
+                "id": self._next_track_id,
+                "spotify_track_id": spotify_track_id,
+                "title": title,
+                "artist": artist,
+                "isrc": isrc,
+                "ai_facts": ai_facts,
+                "normalized_title": None,
+                "normalized_artist": None,
+            }
+            self._next_track_id += 1
+            self.tracks.append(track_rec)
+        else:
+            # Update existing track fields
+            track_rec["title"] = title
+            track_rec["artist"] = artist
+            if isrc is not None:
+                track_rec["isrc"] = isrc
+            if ai_facts is not None:
+                track_rec["ai_facts"] = ai_facts
+
+        # Insert into playlist_tracks link table
+        pt_rec = {
+            "id": self._next_pt_id,
+            "playlist_id": playlist_id,
+            "track_id": track_rec["id"],
+            "spotify_track_id": spotify_track_id,
+            "added_by_spotify_id": added_by_spotify_id,
+            "added_at": None,
+        }
         self._next_pt_id += 1
-        self.playlist_tracks.append(rec)
-        return rec
+        self.playlist_tracks.append(pt_rec)
+
+        # Return the track_rec so tests that mutate it (e.g. checking ai_facts) work
+        return track_rec
 
     def add_user(self, *, telegram_id: int, spotify_id: str):
         self.users.append({"telegram_id": telegram_id, "spotify_id": spotify_id})
 
     def get_track(self, playlist_id: int, spotify_track_id: str) -> dict | None:
-        for t in self.playlist_tracks:
-            if t["playlist_id"] == playlist_id and t["spotify_track_id"] == spotify_track_id:
+        """Find a track by playlist_id + spotify_track_id.
+
+        Returns the tracks-table dict (with title, artist, ai_facts) if found.
+        """
+        for pt in self.playlist_tracks:
+            if pt["playlist_id"] == playlist_id and pt["spotify_track_id"] == spotify_track_id:
+                # Return the corresponding tracks entry
+                for t in self.tracks:
+                    if t["id"] == pt["track_id"]:
+                        return t
+                return None
+        return None
+
+    def _get_track_by_spotify_id(self, spotify_track_id: str) -> dict | None:
+        for t in self.tracks:
+            if t["spotify_track_id"] == spotify_track_id:
                 return t
         return None
 
@@ -113,16 +171,44 @@ class FakeStore:
 
         if "from playlist_tracks" in q and "playlist_id = $1" in q and "ai_facts" not in q:
             pid = args[0]
-            return [FakeRecord({"spotify_track_id": t["spotify_track_id"]})
-                    for t in self.playlist_tracks if t["playlist_id"] == pid]
+            return [FakeRecord({"spotify_track_id": pt["spotify_track_id"]})
+                    for pt in self.playlist_tracks if pt["playlist_id"] == pid]
 
+        # New JOIN query: SELECT t.id, ... FROM tracks t JOIN playlist_tracks pt ...
+        if "from tracks" in q and "ai_facts is null" in q:
+            results = []
+            for pt in self.playlist_tracks:
+                track_rec = next((t for t in self.tracks if t["id"] == pt["track_id"]), None)
+                if track_rec is None:
+                    continue
+                if track_rec["ai_facts"] is not None:
+                    continue
+                if not any(p["id"] == pt["playlist_id"] and p["status"] == "upcoming"
+                           for p in self.playlists):
+                    continue
+                results.append(FakeRecord({
+                    "id": track_rec["id"],
+                    "spotify_track_id": track_rec["spotify_track_id"],
+                    "title": track_rec["title"],
+                    "artist": track_rec["artist"],
+                }))
+            return results
+
+        # Legacy: old query pattern (FROM playlist_tracks ... ai_facts is null)
         if "from playlist_tracks" in q and "ai_facts is null" in q:
-            return [FakeRecord({"id": t["id"], "spotify_track_id": t["spotify_track_id"],
-                                "title": t["title"], "artist": t["artist"]})
-                    for t in self.playlist_tracks
-                    if t["ai_facts"] is None
-                    and any(p["id"] == t["playlist_id"] and p["status"] == "upcoming"
-                            for p in self.playlists)]
+            results = []
+            for pt in self.playlist_tracks:
+                track_rec = next((t for t in self.tracks if t["id"] == pt.get("track_id")), None)
+                if track_rec and track_rec["ai_facts"] is None:
+                    if any(p["id"] == pt["playlist_id"] and p["status"] == "upcoming"
+                           for p in self.playlists):
+                        results.append(FakeRecord({
+                            "id": track_rec["id"],
+                            "spotify_track_id": track_rec["spotify_track_id"],
+                            "title": track_rec["title"],
+                            "artist": track_rec["artist"],
+                        }))
+            return results
 
         return []
 
@@ -138,6 +224,36 @@ class FakeStore:
             return any(t["playlist_id"] == pid and t["spotify_track_id"] == tid
                        for t in self.playlist_tracks)
 
+        # INSERT INTO tracks ... RETURNING id
+        if "insert into tracks" in q and "returning id" in q:
+            spotify_track_id = args[0]
+            title = args[1]
+            artist = args[2]
+            isrc = args[3] if len(args) > 3 else None
+            normalized_title = args[4] if len(args) > 4 else None
+            normalized_artist = args[5] if len(args) > 5 else None
+
+            # ON CONFLICT: update if exists
+            existing = self._get_track_by_spotify_id(spotify_track_id)
+            if existing:
+                existing["title"] = title
+                existing["artist"] = artist
+                return existing["id"]
+
+            track_rec = {
+                "id": self._next_track_id,
+                "spotify_track_id": spotify_track_id,
+                "title": title,
+                "artist": artist,
+                "isrc": isrc,
+                "ai_facts": None,
+                "normalized_title": normalized_title,
+                "normalized_artist": normalized_artist,
+            }
+            self._next_track_id += 1
+            self.tracks.append(track_rec)
+            return track_rec["id"]
+
         if "is_thematic" in q:
             pid = args[0]
             for p in self.playlists:
@@ -147,7 +263,7 @@ class FakeStore:
 
         if "ai_facts" in q and "spotify_track_id" in q:
             tid = args[0]
-            for t in self.playlist_tracks:
+            for t in self.tracks:
                 if t["spotify_track_id"] == tid and t["ai_facts"] is not None:
                     return t["ai_facts"]
             return None
@@ -169,43 +285,119 @@ class FakeStore:
     def handle_execute(self, query: str, args: tuple):
         q = query.strip().lower()
 
-        if "insert into playlist_tracks" in q:
-            pid, tid = args[0], args[1]
-            # ON CONFLICT DO NOTHING
-            if self.get_track(pid, tid):
+        if "insert into tracks" in q and "insert into playlist_tracks" not in q:
+            # Handled by fetchval (RETURNING id), but support execute too
+            spotify_track_id = args[0]
+            title = args[1]
+            artist = args[2]
+            existing = self._get_track_by_spotify_id(spotify_track_id)
+            if existing:
+                existing["title"] = title
+                existing["artist"] = artist
                 return
-            isrc = args[2]
-            title = args[3]
-            artist = args[4]
-            added_by = args[5]
-            added_at = args[6]
-            self.playlist_tracks.append({
-                "id": self._next_pt_id,
-                "playlist_id": pid,
-                "spotify_track_id": tid,
-                "isrc": isrc,
+            track_rec = {
+                "id": self._next_track_id,
+                "spotify_track_id": spotify_track_id,
                 "title": title,
                 "artist": artist,
-                "added_by_spotify_id": added_by,
-                "added_at": added_at,
+                "isrc": args[3] if len(args) > 3 else None,
                 "ai_facts": None,
-            })
-            self._next_pt_id += 1
+                "normalized_title": args[4] if len(args) > 4 else None,
+                "normalized_artist": args[5] if len(args) > 5 else None,
+            }
+            self._next_track_id += 1
+            self.tracks.append(track_rec)
 
-        elif "update playlist_tracks set ai_facts" in q:
+        elif "insert into playlist_tracks" in q:
+            pid = args[0]
+            # New schema: (playlist_id, track_id, spotify_track_id, added_by, added_at)
+            if "track_id" in q:
+                track_id = args[1]
+                spotify_track_id = args[2]
+                added_by = args[3] if len(args) > 3 else None
+                added_at = args[4] if len(args) > 4 else None
+                # ON CONFLICT DO NOTHING
+                if any(pt["playlist_id"] == pid and pt["spotify_track_id"] == spotify_track_id
+                       for pt in self.playlist_tracks):
+                    return
+                self.playlist_tracks.append({
+                    "id": self._next_pt_id,
+                    "playlist_id": pid,
+                    "track_id": track_id,
+                    "spotify_track_id": spotify_track_id,
+                    "added_by_spotify_id": added_by,
+                    "added_at": added_at,
+                })
+                self._next_pt_id += 1
+            else:
+                # Legacy schema: (playlist_id, spotify_track_id, isrc, title, artist, added_by, added_at)
+                tid = args[1]
+                if any(pt["playlist_id"] == pid and pt["spotify_track_id"] == tid
+                       for pt in self.playlist_tracks):
+                    return
+                isrc = args[2]
+                title = args[3]
+                artist = args[4]
+                added_by = args[5]
+                added_at = args[6]
+                # Also create a tracks entry for legacy compat
+                track_rec = self._get_track_by_spotify_id(tid)
+                if not track_rec:
+                    track_rec = {
+                        "id": self._next_track_id,
+                        "spotify_track_id": tid,
+                        "title": title,
+                        "artist": artist,
+                        "isrc": isrc,
+                        "ai_facts": None,
+                        "normalized_title": None,
+                        "normalized_artist": None,
+                    }
+                    self._next_track_id += 1
+                    self.tracks.append(track_rec)
+                self.playlist_tracks.append({
+                    "id": self._next_pt_id,
+                    "playlist_id": pid,
+                    "track_id": track_rec["id"],
+                    "spotify_track_id": tid,
+                    "added_by_spotify_id": added_by,
+                    "added_at": added_at,
+                })
+                self._next_pt_id += 1
+
+        elif "update tracks set ai_facts" in q:
             facts = args[0]
-            pt_id = args[1]
-            for t in self.playlist_tracks:
-                if t["id"] == pt_id:
+            track_id = args[1]
+            for t in self.tracks:
+                if t["id"] == track_id:
                     t["ai_facts"] = facts
                     break
 
+        elif "update playlist_tracks set ai_facts" in q:
+            # Legacy support
+            facts = args[0]
+            pt_id = args[1]
+            for pt in self.playlist_tracks:
+                if pt["id"] == pt_id:
+                    track_rec = next((t for t in self.tracks if t["id"] == pt.get("track_id")), None)
+                    if track_rec:
+                        track_rec["ai_facts"] = facts
+                    break
+
         elif "delete from playlist_tracks" in q:
-            pid, tid = args[0], args[1]
-            self.playlist_tracks = [
-                t for t in self.playlist_tracks
-                if not (t["playlist_id"] == pid and t["spotify_track_id"] == tid)
-            ]
+            if "any($2)" in q:
+                pid = args[0]
+                stale_ids = args[1]
+                self.playlist_tracks = [
+                    pt for pt in self.playlist_tracks
+                    if not (pt["playlist_id"] == pid and pt["spotify_track_id"] in stale_ids)
+                ]
+            else:
+                pid, tid = args[0], args[1]
+                self.playlist_tracks = [
+                    pt for pt in self.playlist_tracks
+                    if not (pt["playlist_id"] == pid and pt["spotify_track_id"] == tid)
+                ]
 
 
 # --- Spotify mock helpers ---

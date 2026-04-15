@@ -66,7 +66,8 @@ class SessionManager:
             ]])
             async with _get_pool().acquire() as conn:
                 playlist_name = await conn.fetchval(
-                    "SELECT playlist_name FROM sessions WHERE id = $1", self.active_session_id
+                    "SELECT p.name FROM sessions s JOIN playlists p ON s.playlist_id = p.id WHERE s.id = $1",
+                    self.active_session_id,
                 )
             names = await self.get_participant_names()
             await edit_text(
@@ -105,7 +106,7 @@ class SessionManager:
                 except Exception as e:
                     log.debug(f"Failed to edit message: {e}")
 
-        session_track_id = await create_session_track(pool, self.active_session_id, info)
+        session_track_id = await create_session_track(_get_pool(), self.active_session_id, info)
         self.current_session_track_id = session_track_id
 
         # Persist current track to DB for recovery
@@ -136,7 +137,7 @@ class SessionManager:
         cached_facts = None
         async with _get_pool().acquire() as conn:
             cached_facts = await conn.fetchval(
-                "SELECT ai_facts FROM playlist_tracks WHERE spotify_track_id = $1 AND ai_facts IS NOT NULL LIMIT 1",
+                "SELECT ai_facts FROM tracks WHERE spotify_track_id = $1 AND ai_facts IS NOT NULL",
                 info.track_id,
             )
 
@@ -147,7 +148,7 @@ class SessionManager:
             if facts:
                 async with _get_pool().acquire() as conn:
                     await conn.execute(
-                        "UPDATE playlist_tracks SET ai_facts = $1 WHERE spotify_track_id = $2",
+                        "UPDATE tracks SET ai_facts = $1 WHERE spotify_track_id = $2",
                         facts, info.track_id,
                     )
 
@@ -371,11 +372,11 @@ class SessionManager:
         turdom_number = None
         async with _get_pool().acquire() as conn:
             turdom_number = await conn.fetchval(
-                "SELECT p.number FROM playlists p JOIN sessions s ON s.playlist_spotify_id = p.spotify_id WHERE s.id = $1",
+                "SELECT p.number FROM playlists p JOIN sessions s ON s.playlist_id = p.id WHERE s.id = $1",
                 session_id_to_end,
             )
 
-        recap_text = await _generate_and_save_recap(pool, session_id_to_end, turdom_number or 0, None)
+        recap_text = await _generate_and_save_recap(_get_pool(), session_id_to_end, turdom_number or 0, None)
 
         if recap_text:
             for tid in self.participants:
@@ -386,7 +387,7 @@ class SessionManager:
 
         # Distribute kept tracks to genre playlists
         try:
-            dist_result = await distribute_session_tracks(pool, session_id_to_end)
+            dist_result = await distribute_session_tracks(_get_pool(), session_id_to_end)
             if dist_result["distributed"] > 0:
                 dist_msg = f"🎶 Раскидал {dist_result['distributed']} треков по жанровым плейлистам!"
                 for tid in self.participants:
@@ -405,7 +406,7 @@ class SessionManager:
         # Log action
         try:
             await log_action(
-                pool, "end_session",
+                _get_pool(), "end_session",
                 session_id=session_id_to_end,
                 result={"total": stats["total"], "kept": stats["kept"], "dropped": stats["dropped"]},
             )
@@ -423,6 +424,17 @@ class SessionManager:
             "🆕 Создать следующий плейлист?",
             reply_markup=post_kb,
         )
+
+        # Clean up track_messages for ended session
+        try:
+            async with _get_pool().acquire() as conn:
+                await conn.execute(
+                    """DELETE FROM track_messages WHERE session_track_id IN
+                       (SELECT id FROM session_tracks WHERE session_id = $1)""",
+                    session_id_to_end,
+                )
+        except Exception as e:
+            log.debug(f"Failed to clean track_messages: {e}")
 
         self.reset()
 
@@ -488,7 +500,9 @@ class SessionManager:
         from app.bot.core import get_pool as _get_pool
         async with _get_pool().acquire() as conn:
             active = await conn.fetchrow(
-                "SELECT id, playlist_spotify_id, current_track_id FROM sessions WHERE status = 'active' ORDER BY id DESC LIMIT 1"
+                """SELECT s.id, p.spotify_id as playlist_spotify_id, s.current_track_id
+                   FROM sessions s JOIN playlists p ON s.playlist_id = p.id
+                   WHERE s.status = 'active' ORDER BY s.id DESC LIMIT 1"""
             )
             if not active:
                 return
