@@ -292,6 +292,16 @@ VERSIONED_MIGRATIONS: list[tuple[int, str, str]] = [
      "CREATE INDEX IF NOT EXISTS idx_session_participants_user_id ON session_participants (user_id)"),
     (59, "idx: votes.participant_id",
      "CREATE INDEX IF NOT EXISTS idx_votes_participant_id ON votes (participant_id)"),
+
+    # --- Fix: drop NOT NULL on denormalized columns (data now in tracks table) ---
+    (60, "playlist_tracks: title nullable",
+     "ALTER TABLE playlist_tracks ALTER COLUMN title DROP NOT NULL"),
+    (61, "playlist_tracks: artist nullable",
+     "ALTER TABLE playlist_tracks ALTER COLUMN artist DROP NOT NULL"),
+    (62, "session_tracks: title nullable",
+     "ALTER TABLE session_tracks ALTER COLUMN title DROP NOT NULL"),
+    (63, "session_tracks: artist nullable",
+     "ALTER TABLE session_tracks ALTER COLUMN artist DROP NOT NULL"),
 ]
 
 # Note: backfill of normalized_title/normalized_artist for existing tracks
