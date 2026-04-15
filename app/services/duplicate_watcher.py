@@ -133,7 +133,7 @@ class DuplicateWatcher:
                 continue
 
             for item in all_items:
-                if item.track is None:
+                if item.track is None or item.track.id is None:
                     continue
                 track = item.track
 
