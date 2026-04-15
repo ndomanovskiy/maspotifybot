@@ -118,14 +118,21 @@ class DuplicateWatcher:
             # Load all known track IDs for this playlist in one query
             known_ids = await self._get_known_track_ids(playlist_db_id)
 
-            # Fetch current tracks from Spotify
+            # Fetch current tracks from Spotify (with pagination)
             try:
-                items = await sp.playlist_items(playlist_spotify_id, limit=100)
+                all_items = []
+                offset = 0
+                while True:
+                    items = await sp.playlist_items(playlist_spotify_id, limit=100, offset=offset)
+                    all_items.extend(items.items)
+                    offset += len(items.items)
+                    if offset >= items.total:
+                        break
             except Exception as e:
                 log.warning(f"Failed to fetch playlist {pl['name']}: {e}")
                 continue
 
-            for item in items.items:
+            for item in all_items:
                 if item.track is None:
                     continue
                 track = item.track
@@ -261,7 +268,7 @@ class DuplicateWatcher:
                         )
 
             # Cleanup: remove DB entries for tracks no longer in Spotify playlist
-            spotify_ids = {item.track.id for item in items.items if item.track}
+            spotify_ids = {item.track.id for item in all_items if item.track and item.track.id}
             stale_ids = known_ids - spotify_ids
             if stale_ids:
                 async with self._pool.acquire() as conn:
@@ -269,6 +276,7 @@ class DuplicateWatcher:
                         "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = ANY($2)",
                         playlist_db_id, list(stale_ids),
                     )
-                log.info(f"Cleaned {len(stale_ids)} stale track(s) from '{pl['name']}': {stale_ids}")
+                log.info(f"Cleaned {len(stale_ids)} stale track(s) from '{pl['name']}'")
+
 
             log.debug(f"Checked playlist {pl['name']}")
