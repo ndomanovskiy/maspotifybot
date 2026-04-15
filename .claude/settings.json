@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gh pr:*)"
+      "Bash(gh pr:*)",
+      "Bash(ssh -i ~/.ssh/main deploy@198.13.190.50 \"docker exec maspotifybot-db-1 psql -U maspotify -c \"\":*)"
     ]
   }
 }

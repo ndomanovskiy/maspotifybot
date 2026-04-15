@@ -98,13 +98,44 @@ class SessionManager:
 
         self.played_track_ids.add(info.track_id)
 
-        # Remove voting buttons from previous track card
-        if self.current_session_track_id is not None and self.current_session_track_id in self.track_messages:
-            for chat_id, message_id, _ in self.track_messages[self.current_session_track_id]:
-                try:
-                    await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
-                except Exception as e:
-                    log.debug(f"Failed to edit message: {e}")
+        # Finalize previous track: auto-keep for those who didn't vote, show result
+        # Skip if already finalized by voting flow (skip_in_progress)
+        if self.current_session_track_id is not None and self.current_session_track_id not in self.skip_in_progress:
+            async with _get_pool().acquire() as conn:
+                prev_result = await conn.fetchrow(
+                    "SELECT vote_result FROM session_tracks WHERE id = $1",
+                    self.current_session_track_id,
+                )
+                if prev_result and prev_result["vote_result"] == "pending":
+                    await conn.execute(
+                        "UPDATE session_tracks SET vote_result = 'keep' WHERE id = $1",
+                        self.current_session_track_id,
+                    )
+                # Get vote counts for result text
+                keep_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM votes WHERE session_track_id = $1 AND vote = 'keep'",
+                    self.current_session_track_id,
+                )
+                drop_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM votes WHERE session_track_id = $1 AND vote = 'drop'",
+                    self.current_session_track_id,
+                )
+                final_result = await conn.fetchval(
+                    "SELECT vote_result FROM session_tracks WHERE id = $1",
+                    self.current_session_track_id,
+                )
+
+            if final_result and final_result != "pending":
+                emoji = "✅" if final_result == "keep" else "❌"
+                result_text = f"{keep_count} за / {drop_count} против — {emoji} {final_result}"
+                await self.finalize_track_card(self.current_session_track_id, result_text)
+            elif self.current_session_track_id in self.track_messages:
+                # Just remove buttons if no votes at all
+                for chat_id, message_id, _ in self.track_messages[self.current_session_track_id]:
+                    try:
+                        await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+                    except Exception as e:
+                        log.debug(f"Failed to edit message: {e}")
 
         session_track_id = await create_session_track(_get_pool(), self.active_session_id, info)
         self.current_session_track_id = session_track_id
@@ -144,7 +175,7 @@ class SessionManager:
         if cached_facts:
             facts = cached_facts
         else:
-            facts = await generate_track_facts(info.title, info.artist, info.album)
+            facts = await generate_track_facts(info.title, info.artist, info.album, release_date=info.release_date)
             if facts:
                 async with _get_pool().acquire() as conn:
                     await conn.execute(
@@ -198,17 +229,24 @@ class SessionManager:
             InlineKeyboardButton(text="✅ Keep", callback_data=f"vote:keep:{session_track_id}"),
             InlineKeyboardButton(text="❌ Drop", callback_data=f"vote:drop:{session_track_id}"),
         ]
+        spotify_url = f"https://open.spotify.com/track/{info.track_id}"
+        link_row = [
+            InlineKeyboardButton(text="🎧 Spotify", url=spotify_url),
+        ]
 
         sent_messages = []
         for tid in self.participants:
             try:
+                fire_row = [
+                    InlineKeyboardButton(text="🔥", callback_data=f"fire:{session_track_id}"),
+                ]
                 if is_admin(tid):
                     rows = [vote_row, [
                         InlineKeyboardButton(text="⏭ Skip", callback_data=f"skip:{session_track_id}"),
                         InlineKeyboardButton(text="🔄 Факты", callback_data=f"regen_facts:{session_track_id}"),
-                    ]]
+                    ], fire_row + link_row]
                 else:
-                    rows = [vote_row]
+                    rows = [vote_row, fire_row + link_row]
                 kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
                 if info.cover_url:
@@ -244,9 +282,17 @@ class SessionManager:
             drop_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM votes WHERE session_track_id = $1 AND vote = 'drop'", session_track_id
             )
+            stid = await conn.fetchval(
+                "SELECT t.spotify_track_id FROM session_tracks st JOIN tracks t ON st.track_id = t.id WHERE st.id = $1",
+                session_track_id,
+            )
 
         keep_text = f"✅ Keep ({keep_count})" if keep_count > 0 else "✅ Keep"
         drop_text = f"❌ Drop ({drop_count})" if drop_count > 0 else "❌ Drop"
+
+        extra_row = [InlineKeyboardButton(text="🔥", callback_data=f"fire:{session_track_id}")]
+        if stid:
+            extra_row.append(InlineKeyboardButton(text="🎧 Spotify", url=f"https://open.spotify.com/track/{stid}"))
 
         for chat_id, message_id, _ in self.track_messages[session_track_id]:
             try:
@@ -258,9 +304,9 @@ class SessionManager:
                     rows = [vote_row, [
                         InlineKeyboardButton(text="⏭ Skip", callback_data=f"skip:{session_track_id}"),
                         InlineKeyboardButton(text="🔄 Факты", callback_data=f"regen_facts:{session_track_id}"),
-                    ]]
+                    ], extra_row]
                 else:
-                    rows = [vote_row]
+                    rows = [vote_row, extra_row]
                 await bot.edit_message_reply_markup(
                     chat_id=chat_id, message_id=message_id,
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -308,8 +354,20 @@ class SessionManager:
                 "SELECT COUNT(*) FROM session_tracks WHERE session_id = $1 AND vote_result = 'pending'",
                 self.active_session_id,
             )
+            voted = await conn.fetchval(
+                "SELECT COUNT(*) FROM session_tracks WHERE session_id = $1 AND vote_result != 'pending'",
+                self.active_session_id,
+            )
+            # Count tracks in the actual playlist
+            playlist_total = await conn.fetchval(
+                """SELECT COUNT(*) FROM playlist_tracks pt
+                   JOIN sessions s ON s.playlist_id = pt.playlist_id
+                   WHERE s.id = $1""",
+                self.active_session_id,
+            )
 
-        if pending == 0:
+        # Don't prompt if we haven't heard most of the playlist yet
+        if pending == 0 and playlist_total > 0 and voted >= playlist_total * 0.8:
             try:
                 sp = await get_spotify()
                 await sp.playback_pause()

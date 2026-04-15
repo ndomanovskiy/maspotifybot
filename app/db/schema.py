@@ -302,6 +302,19 @@ VERSIONED_MIGRATIONS: list[tuple[int, str, str]] = [
      "ALTER TABLE session_tracks ALTER COLUMN title DROP NOT NULL"),
     (63, "session_tracks: artist nullable",
      "ALTER TABLE session_tracks ALTER COLUMN artist DROP NOT NULL"),
+
+    # --- Track reactions (🔥 "разъебало") ---
+    (64, "track_reactions table", """
+        CREATE TABLE IF NOT EXISTS track_reactions (
+            id SERIAL PRIMARY KEY,
+            session_track_id INTEGER REFERENCES session_tracks(id) ON DELETE CASCADE,
+            telegram_id BIGINT NOT NULL,
+            reaction TEXT NOT NULL DEFAULT 'fire',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (session_track_id, telegram_id)
+        )"""),
+    (65, "idx: track_reactions.session_track_id",
+     "CREATE INDEX IF NOT EXISTS idx_track_reactions_session_track_id ON track_reactions (session_track_id)"),
 ]
 
 # Note: backfill of normalized_title/normalized_artist for existing tracks

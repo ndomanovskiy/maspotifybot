@@ -19,6 +19,7 @@ class TrackInfo:
     duration_ms: int
     progress_ms: int
     added_by: str | None = None
+    release_date: str = ""
 
 
 class SpotifyMonitor:
@@ -115,6 +116,7 @@ class SpotifyMonitor:
                     cover_url=track.album.images[0].url if track.album.images else "",
                     duration_ms=track.duration_ms,
                     progress_ms=playback.progress_ms or 0,
+                    release_date=track.album.release_date if hasattr(track.album, "release_date") else "",
                 )
 
                 # Try to get added_by from playlist context

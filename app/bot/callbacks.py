@@ -162,6 +162,45 @@ async def on_skip(callback: CallbackQuery):
     await skip_to_next()
 
 
+# ── Fire reaction 🔥 ───────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("fire:"))
+async def on_fire(callback: CallbackQuery):
+    """Record 🔥 reaction on a track."""
+    if not await is_registered(callback.from_user.id):
+        await callback.answer("⛔ Только для участников", show_alert=True)
+        return
+
+    session_track_id = safe_int(callback.data.split(":")[1])
+    if session_track_id is None:
+        await callback.answer("Ошибка")
+        return
+
+    async with get_pool().acquire() as conn:
+        # Toggle: insert or delete
+        existing = await conn.fetchval(
+            "SELECT id FROM track_reactions WHERE session_track_id = $1 AND telegram_id = $2",
+            session_track_id, callback.from_user.id,
+        )
+        if existing:
+            await conn.execute(
+                "DELETE FROM track_reactions WHERE id = $1", existing,
+            )
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM track_reactions WHERE session_track_id = $1", session_track_id,
+            )
+            await callback.answer(f"🔥 убрано ({count})")
+        else:
+            await conn.execute(
+                "INSERT INTO track_reactions (session_track_id, telegram_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                session_track_id, callback.from_user.id,
+            )
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM track_reactions WHERE session_track_id = $1", session_track_id,
+            )
+            await callback.answer(f"🔥 ({count})")
+
+
 # ── Regen facts ─────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("regen_facts:"))
@@ -175,12 +214,22 @@ async def on_regen_facts(callback: CallbackQuery):
 
     async with get_pool().acquire() as conn:
         track = await conn.fetchrow(
-            "SELECT t.spotify_track_id, t.title, t.artist FROM session_tracks st JOIN tracks t ON st.track_id = t.id WHERE st.id = $1",
+            "SELECT t.spotify_track_id, t.title, t.artist, t.album FROM session_tracks st JOIN tracks t ON st.track_id = t.id WHERE st.id = $1",
             session_track_id,
         )
 
     if not track:
         return
+
+    # Fetch release_date from Spotify for date hint
+    release_date = ""
+    try:
+        from app.spotify.auth import get_spotify
+        sp = await get_spotify()
+        sp_track = await sp.track(track["spotify_track_id"])
+        release_date = sp_track.album.release_date if hasattr(sp_track.album, "release_date") else ""
+    except Exception:
+        pass
 
     async with get_pool().acquire() as conn:
         await conn.execute(
@@ -188,7 +237,7 @@ async def on_regen_facts(callback: CallbackQuery):
             track["spotify_track_id"],
         )
 
-    facts = await generate_track_facts(track["title"], track["artist"], "")
+    facts = await generate_track_facts(track["title"], track["artist"], track["album"] or "", release_date=release_date or "")
 
     if facts:
         async with get_pool().acquire() as conn:

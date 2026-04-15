@@ -61,14 +61,22 @@ async def _call_llm(system: str, user_content: str, max_tokens: int) -> tuple[st
     return "", "error"
 
 
-async def generate_track_facts(title: str, artist: str, album: str) -> str:
+async def generate_track_facts(title: str, artist: str, album: str, release_date: str = "") -> str:
     """Generate interesting facts about a track. Sonnet → GPT-4o fallback."""
     if not settings.anthropic_api_key and not settings.openai_api_key:
         return ""
 
+    date_hint = ""
+    if release_date:
+        date_hint = (
+            f"Дата релиза альбома: {release_date}. "
+            "Первый факт — 📅 год выхода оригинала. Если это ремастер — укажи оба года: оригинал и ремастер. "
+        )
+
     system = (
         "Ты — TURDOM Assistant, музыкальный эксперт. "
         "Напиши ровно 5 самых интересных тезисных фактов о треке. "
+        f"{date_hint}"
         "Выбери лучшие из возможных категорий:\n"
         "• Все артисты трека и их роли (feat, prod, sample)\n"
         "• История создания — как записывали, кто участвовал, backstory\n"
