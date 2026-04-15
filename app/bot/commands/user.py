@@ -47,7 +47,6 @@ async def cmd_start(message: Message):
     msg = (
         "🎵 <b>TURDOM Assistant</b>\n\n"
         "📋 <b>Команды:</b>\n"
-        "/reg <code>spotify_url</code> — привязать Spotify\n"
         "/next — ссылка на следующий плейлист\n"
         "/get <code>номер</code> — ссылка на плейлист\n"
         "/join — присоединиться к сессии\n"
@@ -63,6 +62,7 @@ async def cmd_start(message: Message):
     if is_admin(message.from_user.id):
         msg += (
             "\n\n🔧 <b>Админ:</b>\n"
+            "/reg <code>spotify_url</code> — привязать Spotify\n"
             "/session start | end | kick <code>@user</code>\n"
             "/playlist create | close | status | link | reschedule\n"
             "/distribute <code>номер</code> — раскидать по жанрам\n"

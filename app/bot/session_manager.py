@@ -439,7 +439,7 @@ class SessionManager:
         self.reset()
 
     @staticmethod
-    def recap_keyboard(turdom_num: int, page: int, total: int) -> InlineKeyboardMarkup:
+    def recap_keyboard(turdom_num: int, page: int, total: int, admin: bool = False) -> InlineKeyboardMarkup:
         """Build carousel keyboard for recap blocks."""
         buttons = []
         if page > 0:
@@ -448,16 +448,17 @@ class SessionManager:
         if page < total - 1:
             buttons.append(InlineKeyboardButton(text="→", callback_data=f"recap_page:{turdom_num}:{page + 1}"))
         rows = [buttons]
-        rows.append([InlineKeyboardButton(text="🔄 Перегенерировать", callback_data=f"rerecap:{turdom_num}")])
+        if admin:
+            rows.append([InlineKeyboardButton(text="🔄 Перегенерировать", callback_data=f"rerecap:{turdom_num}")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    async def send_recap_carousel(self, chat_id: int, recap_text: str, turdom_num: int):
+    async def send_recap_carousel(self, chat_id: int, recap_text: str, turdom_num: int, user_id: int | None = None):
         """Send first recap block as carousel with navigation."""
-        from app.bot.core import send
+        from app.bot.core import send, is_admin
         blocks = [b.strip() for b in recap_text.split("\n\n---\n\n") if b.strip()]
         if not blocks:
             return
-        kb = self.recap_keyboard(turdom_num, 0, len(blocks))
+        kb = self.recap_keyboard(turdom_num, 0, len(blocks), admin=is_admin(user_id or chat_id))
         await send(chat_id, blocks[0], reply_markup=kb)
 
     async def cache_pre_recap_teaser(self):

@@ -371,35 +371,35 @@ class TestGetInterval:
     @patch("app.services.duplicate_watcher.datetime")
     def test_wednesday_morning_utc(self, mock_dt):
         """Wednesday 10:00 UTC = 13:00 MSK (before 14:00) -> 1 hour."""
-        mock_dt.utcnow.return_value = datetime(2026, 4, 1, 10, 0)
+        mock_dt.now.return_value = datetime(2026, 4, 1, 10, 0)
         watcher = self._make_watcher()
         assert watcher._get_interval() == 3600
 
     @patch("app.services.duplicate_watcher.datetime")
     def test_wednesday_afternoon_utc(self, mock_dt):
         """Wednesday 14:00 UTC = 17:00 MSK (after 14:00) -> 24 hours."""
-        mock_dt.utcnow.return_value = datetime(2026, 4, 1, 14, 0)
+        mock_dt.now.return_value = datetime(2026, 4, 1, 14, 0)
         watcher = self._make_watcher()
         assert watcher._get_interval() == 86400
 
     @patch("app.services.duplicate_watcher.datetime")
     def test_monday(self, mock_dt):
         """Monday -> ~5x per day."""
-        mock_dt.utcnow.return_value = datetime(2026, 3, 30, 12, 0)
+        mock_dt.now.return_value = datetime(2026, 3, 30, 12, 0)
         watcher = self._make_watcher()
         assert watcher._get_interval() == 17280
 
     @patch("app.services.duplicate_watcher.datetime")
     def test_tuesday(self, mock_dt):
         """Tuesday -> every hour."""
-        mock_dt.utcnow.return_value = datetime(2026, 3, 31, 12, 0)
+        mock_dt.now.return_value = datetime(2026, 3, 31, 12, 0)
         watcher = self._make_watcher()
         assert watcher._get_interval() == 3600
 
     @patch("app.services.duplicate_watcher.datetime")
     def test_weekend(self, mock_dt):
         """Saturday -> 2x per day."""
-        mock_dt.utcnow.return_value = datetime(2026, 4, 4, 12, 0)
+        mock_dt.now.return_value = datetime(2026, 4, 4, 12, 0)
         watcher = self._make_watcher()
         assert watcher._get_interval() == 43200
 

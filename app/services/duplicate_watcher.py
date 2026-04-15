@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import asyncpg
 
@@ -45,7 +45,7 @@ class DuplicateWatcher:
 
     def _get_interval(self) -> int:
         """Get polling interval in seconds based on day of week and time."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         # Convert to Moscow time (UTC+3)
         moscow_hour = (now.hour + 3) % 24
         weekday = now.weekday()  # 0=Mon, 6=Sun

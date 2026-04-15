@@ -310,7 +310,7 @@ async def on_create_playlist(callback: CallbackQuery):
         text = (
             f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
             f"📎 Открой плейлист в Spotify → Invite Collaborators → скинь ссылку сюда:\n"
-            f"<code>/setnextlink ссылка</code>"
+            f"<code>/playlist link ссылка</code>"
         )
         await callback.message.edit_text(text, parse_mode="HTML")
 
@@ -394,7 +394,7 @@ async def on_recap_page(callback: CallbackQuery):
         await callback.answer("Нет такой страницы")
         return
 
-    kb = session.recap_keyboard(turdom_num, page, len(blocks))
+    kb = session.recap_keyboard(turdom_num, page, len(blocks), admin=is_admin(callback.from_user.id))
     await callback.message.edit_text(blocks[page], parse_mode="HTML", reply_markup=kb, link_preview_options=_NO_PREVIEW)
     await callback.answer()
 
