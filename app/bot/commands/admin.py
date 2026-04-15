@@ -292,9 +292,17 @@ async def cmd_scan(message: Message):
         suspicious_count = 0
 
         for pl in playlists:
-            items = await sp.playlist_items(pl["spotify_id"], limit=100)
-            for item in items.items:
-                if not item.track:
+            all_items = []
+            offset = 0
+            while True:
+                items = await sp.playlist_items(pl["spotify_id"], limit=100, offset=offset)
+                all_items.extend(items.items)
+                offset += len(items.items)
+                if offset >= items.total:
+                    break
+
+            for item in all_items:
+                if not item.track or not item.track.id:
                     continue
                 track = item.track
                 isrc = None
