@@ -465,11 +465,18 @@ class SessionManager:
         from app.bot.core import get_pool as _get_pool
         try:
             sp = await get_spotify()
-            pl_items = await sp.playlist_items(self.active_playlist_id, limit=100)
-            total = pl_items.total
+            all_items = []
+            offset = 0
+            while True:
+                pl_items = await sp.playlist_items(self.active_playlist_id, limit=100, offset=offset)
+                all_items.extend(pl_items.items)
+                offset += len(pl_items.items)
+                if offset >= pl_items.total:
+                    break
+            total = len(all_items)
 
             contributors = {}
-            for item in pl_items.items:
+            for item in all_items:
                 if item.added_by:
                     uid = item.added_by.id
                     contributors[uid] = contributors.get(uid, 0) + 1
