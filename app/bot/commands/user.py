@@ -2,6 +2,7 @@
 /stats, /mystats, /history, /join, /leave, /secret."""
 
 import html
+import logging
 import re
 
 from aiogram import Router
@@ -12,11 +13,14 @@ from app.config import settings
 from app.services.playlists import get_next_playlist, check_duplicate, get_track_isrc
 from app.services.track_formatter import format_track, format_album
 from app.services.ai import analyze_easter_egg
+from app.services.genre_distributor import check_previously_dropped
 from app.bot.core import (
-    bot, get_pool, is_admin, require_registered, extract_spotify_id,
+    bot, get_pool, is_admin, is_registered, require_registered, extract_spotify_id,
     reply, send,
 )
 from app.bot.session_manager import session
+
+log = logging.getLogger(__name__)
 
 router = Router()
 
@@ -687,3 +691,60 @@ async def on_secret_clarification(message: Message):
         )
 
     await reply(message, f"🥚 Секрет обновлён!\n🔒 <i>{html.escape(updated_secret)}</i>")
+
+
+# ── Auto duplicate check on Spotify link ───────────────────────
+
+@router.message(lambda m: m.text and "open.spotify.com/track/" in m.text and not m.text.startswith("/"))
+async def on_spotify_link(message: Message):
+    """Auto-check duplicate when user sends a Spotify track link."""
+    if not await is_registered(message.from_user.id):
+        return
+
+    track_id = extract_spotify_id(message.text, "track")
+    if not track_id:
+        return
+
+    # Fetch track info
+    title, artist = None, None
+    try:
+        from app.spotify.auth import get_spotify
+        sp = await get_spotify()
+        track = await sp.track(track_id)
+        title = track.name
+        artist = ", ".join(a.name for a in track.artists)
+    except Exception as e:
+        log.debug(f"Auto-check: failed to fetch track {track_id}: {e}")
+        return
+
+    isrc = await get_track_isrc(track_id)
+    duplicates = await check_duplicate(get_pool(), track_id, isrc, title=title, artist=artist)
+
+    # Also check if previously dropped
+    drops = await check_previously_dropped(get_pool(), track_id)
+
+    if not duplicates and not drops:
+        return  # No issues — stay silent
+
+    parts = []
+    if duplicates:
+        match_labels = {
+            "exact": "🎯 точное совпадение",
+            "isrc": "🔗 тот же трек (другой альбом)",
+            "fuzzy_exact": "🔍 совпадение после нормализации",
+            "fuzzy_contains": "🔍 название содержится",
+            "fuzzy_levenshtein": "🔍 похожее название",
+        }
+        lines = []
+        for d in duplicates:
+            label = match_labels.get(d["match"], d["match"])
+            track_display = format_track(d["title"], d["artist"])
+            lines.append(f"  {label} — {track_display}\n  в {d['playlist']}")
+        parts.append(f"⚠️ <b>Дубликат!</b>\n" + "\n".join(lines))
+
+    if drops:
+        drop_lines = [f"  ❌ {d['playlist']} ({d['date']})" for d in drops]
+        parts.append(f"⚠️ <b>Ранее дропнут:</b>\n" + "\n".join(drop_lines))
+
+    track_fmt = format_track(title or "?", artist or "?", track_id)
+    await reply(message, f"🎵 {track_fmt}\n\n" + "\n\n".join(parts))
