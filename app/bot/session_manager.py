@@ -11,7 +11,7 @@ from app.spotify.monitor import SpotifyMonitor, TrackInfo
 from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next, create_session_track
 from app.services.ai import generate_track_facts, generate_pre_recap_teaser
 from app.services.genre_distributor import distribute_session_tracks
-from app.services.track_formatter import format_track, format_album
+from app.services.track_formatter import build_track_caption
 
 log = logging.getLogger(__name__)
 
@@ -183,47 +183,12 @@ class SessionManager:
                         facts, info.track_id,
                     )
 
-        facts_text = f"\n\n💡 {facts}" if facts else ""
-
-        track_display = format_track(info.title, info.artist, info.track_id)
-
         VOTE_RESULT_RESERVE = 50
-        MAX_CAPTION = 1024 - VOTE_RESULT_RESERVE
-
-        album_display = format_album(info.album)
-
-        text = (
-            f"🎵 {track_display}\n"
-            f"💿 {album_display}"
-            f"{added_by_text}{facts_text}"
+        text = build_track_caption(
+            info.title, info.artist, info.album, info.track_id,
+            facts=facts or "", added_by_text=added_by_text,
+            max_caption=1024 - VOTE_RESULT_RESERVE,
         )
-
-        # Trim facts if too long
-        if len(text) > MAX_CAPTION and facts_text:
-            header = (
-                f"🎵 {track_display}\n"
-                f"💿 {album_display}"
-                f"{added_by_text}"
-            )
-            available = MAX_CAPTION - len(header) - 3
-            if available > 30:
-                fact_lines = facts.split("\n")
-                trimmed = []
-                total = 0
-                for line in fact_lines:
-                    if total + len(line) + 1 <= available:
-                        trimmed.append(line)
-                        total += len(line) + 1
-                    else:
-                        break
-                facts_text = f"\n\n💡 " + "\n".join(trimmed) if trimmed else ""
-            else:
-                facts_text = ""
-            text = (
-                f"🎵 {track_display}\n"
-                f"💿 {album_display}"
-                f"{added_by_text}{facts_text}"
-            )
 
         vote_row = [
             InlineKeyboardButton(text="✅ Keep", callback_data=f"vote:keep:{session_track_id}"),

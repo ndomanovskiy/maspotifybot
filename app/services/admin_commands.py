@@ -4,8 +4,10 @@ All commands use TURDOM playlist number (e.g. 91) as identifier.
 Actions are logged to action_log table.
 Times displayed in MSK (UTC+3).
 """
+import html
 import json
 import logging
+import math
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -271,7 +273,9 @@ async def _generate_and_save_recap(
     async with pool.acquire() as conn:
         # Tracks in listening order with genres and facts
         tracks_data = [dict(r) for r in await conn.fetch(
-            """SELECT st.id, st.title, st.artist, st.vote_result, st.added_by_spotify_id,
+            """SELECT st.id, COALESCE(t.title, st.title) as title,
+                      COALESCE(t.artist, st.artist) as artist,
+                      st.vote_result, st.added_by_spotify_id,
                       COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, st.added_by_spotify_id, '?') as added_by,
                       t.genre, t.ai_facts
                FROM session_tracks st
@@ -299,11 +303,36 @@ async def _generate_and_save_recap(
                       sp.secret_note
                FROM session_participants sp
                JOIN users u ON sp.telegram_id = u.telegram_id
-               WHERE sp.session_id = $1""",
+               WHERE sp.session_id = $1 AND sp.active = TRUE""",
             session_id,
         )
         participant_names = [r["name"] for r in participant_rows]
         easter_eggs = {r["name"]: r["secret_note"] for r in participant_rows if r["secret_note"]}
+
+        # Fire reactions: tracks that "destroyed" listeners + who pressed 🔥 how many times
+        fire_tracks = await conn.fetch(
+            """SELECT COALESCE(t.title, st.title) as title,
+                      COALESCE(t.artist, st.artist) as artist,
+                      COUNT(tr.id) as fire_count
+               FROM session_tracks st
+               LEFT JOIN tracks t ON st.track_id = t.id
+               JOIN track_reactions tr ON tr.session_track_id = st.id AND tr.reaction = 'fire'
+               WHERE st.session_id = $1
+               GROUP BY st.id, t.title, st.title, t.artist, st.artist
+               ORDER BY fire_count DESC""",
+            session_id,
+        )
+        fire_by_user = await conn.fetch(
+            """SELECT COALESCE('@' || NULLIF(u.telegram_username, ''), u.telegram_name, '?') as name,
+                      COUNT(*) as count
+               FROM track_reactions tr
+               JOIN users u ON tr.telegram_id = u.telegram_id
+               JOIN session_tracks st ON tr.session_track_id = st.id
+               WHERE st.session_id = $1 AND tr.reaction = 'fire'
+               GROUP BY u.telegram_id, u.telegram_username, u.telegram_name
+               ORDER BY count DESC""",
+            session_id,
+        )
 
     total = len(tracks_data)
     kept = sum(1 for t in tracks_data if t["vote_result"] == "keep")
@@ -423,6 +452,24 @@ async def _generate_and_save_recap(
 
     if ai_blocks.get("facts"):
         messages.append(f"💡 <b>Забавные факты</b>\n\n{ai_blocks['facts']}")
+
+    # 🔥 Бенгеры — треки, за которые проголосовало ≥2/3 активных участников
+    participant_count = len(participant_names)
+    threshold = max(2, math.ceil(participant_count * 2 / 3)) if participant_count else 0
+    bangers = [r for r in fire_tracks if r["fire_count"] >= threshold] if threshold else []
+    if bangers:
+        fire_lines = ["🔥 <b>Бенгеры</b>\n"]
+        for i, r in enumerate(bangers[:15], 1):
+            fire_lines.append(
+                f"{i}. {html.escape(r['title'])} — {html.escape(r['artist'])} ({r['fire_count']} 🔥)"
+            )
+        if len(bangers) > 15:
+            fire_lines.append(f"   <i>…и ещё {len(bangers) - 15}</i>")
+        if fire_by_user:
+            fire_lines.append("\n<b>🔥 огня раздавал:</b>")
+            for r in fire_by_user[:10]:
+                fire_lines.append(f"   {html.escape(r['name'])} — {r['count']}")
+        messages.append("\n".join(fire_lines))
 
     # Easter eggs — one block per person with their own AI analysis
     if easter_eggs:

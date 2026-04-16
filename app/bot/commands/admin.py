@@ -18,7 +18,7 @@ from app.services.playlists import (
 )
 from app.services.genre_resolver import backfill_genres
 from app.services.ai import generate_track_facts
-from app.services.track_formatter import format_track, format_album
+from app.services.track_formatter import build_track_caption
 from app.services.admin_commands import (
     cmd_distribute, cmd_distribute_force, cmd_recap, cmd_recap_regenerate,
     cmd_close_playlist, cmd_create_next, cmd_dbinfo, log_action, check_duplicate_session,
@@ -233,34 +233,19 @@ async def cmd_preview(message: Message):
         track = await sp.track(track_id)
 
         artist_str = ", ".join(a.name for a in track.artists)
-        track_display = format_track(track.name, artist_str, track.id)
-        album_display = format_album(track.album.name)
         cover_url = track.album.images[0].url if track.album.images else None
 
         await message.answer("⏳ Генерирую факты...")
-        facts = await generate_track_facts(track.name, artist_str, track.album.name)
-        facts_text = f"\n\n💡 {facts}" if facts else ""
-
-        text = (
-            f"🎵 {track_display}\n"
-            f"💿 {album_display}"
-            f"{facts_text}"
+        release_date = track.album.release_date if hasattr(track.album, "release_date") else ""
+        facts = await generate_track_facts(
+            track.name, artist_str, track.album.name, release_date=release_date or ""
         )
 
-        if cover_url and len(text) > 1024 and facts_text:
-            fact_lines = facts.split("\n")
-            trimmed = []
-            header = f"🎵 {track_display}\n💿 {album_display}"
-            available = 1024 - len(header) - 3
-            total_len = 0
-            for line in fact_lines:
-                if total_len + len(line) + 1 <= available:
-                    trimmed.append(line)
-                    total_len += len(line) + 1
-                else:
-                    break
-            facts_text = f"\n\n💡 " + "\n".join(trimmed) if trimmed else ""
-            text = f"🎵 {track_display}\n💿 {album_display}{facts_text}"
+        # Photo caption limit = 1024, plain text = 4096
+        text = build_track_caption(
+            track.name, artist_str, track.album.name, track.id, facts=facts,
+            max_caption=1024 if cover_url else 4096,
+        )
 
         if cover_url:
             await reply_photo(message, cover_url, text)
