@@ -5,21 +5,23 @@ from datetime import datetime, timezone
 import asyncpg
 
 from app.spotify.auth import get_spotify
-from app.services.playlists import check_duplicate, get_track_isrc
+from app.services.playlists import check_duplicate, check_siblings, get_track_isrc
 from app.services.ai import generate_track_facts
 from app.services.genre_resolver import resolve_and_save_genre
 from app.services.genre_distributor import check_previously_dropped
-from app.services.normalize import normalize_title, normalize_artist
+from app.services.normalize import normalize_title, normalize_artist, base_title
 
 log = logging.getLogger(__name__)
 
 
 class DuplicateWatcher:
-    def __init__(self, pool: asyncpg.Pool, notify_callback, confirm_callback=None, drop_warn_callback=None):
+    def __init__(self, pool: asyncpg.Pool, notify_callback, confirm_callback=None,
+                 drop_warn_callback=None, sibling_warn_callback=None):
         self._pool = pool
         self._notify = notify_callback
         self._confirm = confirm_callback
         self._drop_warn = drop_warn_callback
+        self._sibling_warn = sibling_warn_callback
         self._running = False
 
     async def start(self):
@@ -157,12 +159,18 @@ class DuplicateWatcher:
                     try:
                         # Upsert into tracks
                         track_db_id = await conn.fetchval(
-                            """INSERT INTO tracks (spotify_track_id, title, artist, isrc, normalized_title, normalized_artist)
-                               VALUES ($1, $2, $3, $4, $5, $6)
-                               ON CONFLICT (spotify_track_id) DO UPDATE SET title = $2, artist = $3
+                            """INSERT INTO tracks (spotify_track_id, title, artist, isrc,
+                                                    normalized_title, normalized_artist, normalized_base)
+                               VALUES ($1, $2, $3, $4, $5, $6, $7)
+                               ON CONFLICT (spotify_track_id) DO UPDATE
+                                  SET title = EXCLUDED.title, artist = EXCLUDED.artist,
+                                      normalized_title = EXCLUDED.normalized_title,
+                                      normalized_artist = EXCLUDED.normalized_artist,
+                                      normalized_base = EXCLUDED.normalized_base
                                RETURNING id""",
                             track.id, track.name, track_artist, isrc,
                             normalize_title(track.name), normalize_artist(track_artist),
+                            base_title(track.name),
                         )
                         # Insert playlist_tracks link
                         await conn.execute(
@@ -274,6 +282,38 @@ class DuplicateWatcher:
                             track_id=track.id,
                             playlist_spotify_id=playlist_spotify_id,
                         )
+
+                    # Sibling alert (modified version of an existing track) — only if no duplicates
+                    # Skip thematic playlists (intentional curation, not duplicate noise).
+                    if self._sibling_warn:
+                        async with self._pool.acquire() as conn:
+                            sib_is_thematic = await conn.fetchval(
+                                "SELECT is_thematic FROM playlists WHERE id = $1", playlist_db_id
+                            )
+                        if sib_is_thematic:
+                            continue
+                        siblings = await check_siblings(
+                            self._pool, track.id, track.name, track_artist,
+                            exclude_playlist_id=playlist_db_id,
+                        )
+                        if siblings:
+                            telegram_id = None
+                            if added_by:
+                                async with self._pool.acquire() as conn:
+                                    row = await conn.fetchrow(
+                                        "SELECT telegram_id FROM users WHERE spotify_id = $1", added_by
+                                    )
+                                    if row:
+                                        telegram_id = row["telegram_id"]
+                            await self._sibling_warn(
+                                telegram_id=telegram_id,
+                                track_title=track.name,
+                                artist=track_artist,
+                                siblings=siblings,
+                                playlist_name=pl["name"],
+                                track_id=track.id,
+                                playlist_spotify_id=playlist_spotify_id,
+                            )
 
             # Cleanup: remove DB entries for tracks no longer in Spotify playlist
             spotify_ids = {item.track.id for item in all_items if item.track and item.track.id}

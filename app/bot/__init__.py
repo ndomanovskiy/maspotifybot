@@ -1,6 +1,7 @@
 """Bot package — wires routers and provides setup_bot entry point."""
 
 import asyncio
+import html
 import logging
 
 from aiogram.types import Message, BotCommand, BotCommandScopeChat
@@ -193,12 +194,39 @@ async def setup_bot(pool):
         except Exception as e:
             log.debug(f"Failed to send drop warning to {target}: {e}")
 
+    async def on_sibling_warn(telegram_id, track_title, artist, siblings, playlist_name, track_id, playlist_spotify_id):
+        """Inform that a modified version (remix/sped up/etc) of an existing track was added — informational only."""
+        track_fmt = format_track(track_title, artist, track_id)
+        sib_lines = []
+        kind_label = {"self": "это версия", "other": "уже есть версия", "both": "обе — версии"}
+        for s in siblings[:5]:
+            arrow = kind_label.get(s["kind"], "версия")
+            sib_lines.append(
+                f"  🔁 {arrow}: {html.escape(s['title'])} — {html.escape(s['artist'])} "
+                f"<i>в {html.escape(s['playlist'])}</i>"
+            )
+        if len(siblings) > 5:
+            sib_lines.append(f"  <i>…и ещё {len(siblings) - 5}</i>")
+        sib_text = "\n".join(sib_lines)
+
+        msg = (
+            f"ℹ️ <b>Изменённая версия — не дубль</b>\n\n"
+            f"🎵 {track_fmt}\nДобавлен в <b>{html.escape(playlist_name)}</b>\n\n"
+            f"{sib_text}"
+        )
+        target = telegram_id or settings.telegram_admin_id
+        try:
+            await send(target, msg)
+        except Exception as e:
+            log.debug(f"Failed to send sibling warning to {target}: {e}")
+
     set_duplicate_notify(on_duplicate_found)
     set_fuzzy_confirm(on_fuzzy_duplicate_confirm)
     watcher = DuplicateWatcher(
         pool, on_duplicate_found,
         confirm_callback=on_fuzzy_duplicate_confirm,
         drop_warn_callback=on_drop_warn,
+        sibling_warn_callback=on_sibling_warn,
     )
     asyncio.create_task(watcher.start())
 

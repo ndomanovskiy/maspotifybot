@@ -315,6 +315,12 @@ VERSIONED_MIGRATIONS: list[tuple[int, str, str]] = [
         )"""),
     (65, "idx: track_reactions.session_track_id",
      "CREATE INDEX IF NOT EXISTS idx_track_reactions_session_track_id ON track_reactions (session_track_id)"),
+
+    # --- Sibling detection (modified versions: remix, sped up, slowed, etc.) ---
+    (66, "tracks.normalized_base column",
+     "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS normalized_base TEXT"),
+    (67, "idx: tracks.normalized_base",
+     "CREATE INDEX IF NOT EXISTS idx_tracks_normalized_base ON tracks (normalized_base)"),
 ]
 
 # Note: backfill of normalized_title/normalized_artist for existing tracks

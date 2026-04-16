@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from app.config import settings
-from app.services.playlists import get_next_playlist, check_duplicate, get_track_isrc
+from app.services.playlists import get_next_playlist, check_duplicate, check_siblings, get_track_isrc
 from app.services.track_formatter import format_track, format_album
 from app.services.ai import analyze_easter_egg
 from app.services.genre_distributor import check_previously_dropped
@@ -234,8 +234,26 @@ async def cmd_check(message: Message):
             message,
             f"⚠️ <b>Дубликат найден!</b>\n\n" + "\n\n".join(lines),
         )
-    else:
-        await message.answer("✅ Трек не найден в базе — можно добавлять!")
+        return
+
+    # Sibling alert (modified version)
+    siblings = await check_siblings(get_pool(), track_id, title or "", artist or "")
+    if siblings:
+        sib_lines = []
+        kind_label = {"self": "это версия", "other": "уже есть версия", "both": "обе — версии"}
+        for s in siblings[:5]:
+            track_display = format_track(s["title"], s["artist"])
+            arrow = kind_label.get(s["kind"], "версия")
+            sib_lines.append(f"• {arrow}: {track_display}\n  в {html.escape(s['playlist'])}")
+        if len(siblings) > 5:
+            sib_lines.append(f"<i>…и ещё {len(siblings) - 5}</i>")
+        await reply(
+            message,
+            "ℹ️ <b>Не дубликат, но имей в виду — изменённая версия:</b>\n\n" + "\n".join(sib_lines),
+        )
+        return
+
+    await message.answer("✅ Трек не найден в базе — можно добавлять!")
 
 
 # ── /stats ──────────────────────────────────────────────────────
@@ -723,8 +741,16 @@ async def on_spotify_link(message: Message):
     # Also check if previously dropped
     drops = await check_previously_dropped(get_pool(), track_id)
 
-    if not duplicates and not drops:
-        return  # No issues — stay silent
+    # Sibling alert (modified version: remix, sped up, etc.) — only if not already a duplicate
+    siblings = []
+    if not duplicates:
+        siblings = await check_siblings(get_pool(), track_id, title or "", artist or "")
+
+    track_fmt = format_track(title or "?", artist or "?", track_id)
+
+    if not duplicates and not drops and not siblings:
+        await reply(message, f"🎵 {track_fmt}\n\n✅ Чисто — не дубликат, не было в дропах")
+        return
 
     parts = []
     if duplicates:
@@ -746,5 +772,15 @@ async def on_spotify_link(message: Message):
         drop_lines = [f"  ❌ {d['playlist']} ({d['date']})" for d in drops]
         parts.append(f"⚠️ <b>Ранее дропнут:</b>\n" + "\n".join(drop_lines))
 
-    track_fmt = format_track(title or "?", artist or "?", track_id)
+    if siblings:
+        sib_lines = []
+        kind_label = {"self": "это версия", "other": "уже есть версия", "both": "обе — версии"}
+        for s in siblings[:5]:
+            track_display = format_track(s["title"], s["artist"])
+            arrow = kind_label.get(s["kind"], "версия")
+            sib_lines.append(f"  🔁 {arrow}: {track_display}\n  в {html.escape(s['playlist'])}")
+        if len(siblings) > 5:
+            sib_lines.append(f"  <i>…и ещё {len(siblings) - 5}</i>")
+        parts.append("ℹ️ <b>Изменённая версия — не дубль, но имей в виду:</b>\n" + "\n".join(sib_lines))
+
     await reply(message, f"🎵 {track_fmt}\n\n" + "\n\n".join(parts))

@@ -384,9 +384,13 @@ class SessionManager:
 
         # Pre-recap teaser
         teaser = self.cached_pre_recap or "🎧 Ну что, чем всё закончилось? Сейчас узнаем! 🥁"
+        progress_msgs: dict[int, int] = {}
         for tid in self.participants:
             try:
                 await send(tid, teaser)
+                # Persistent progress msg — edited when recap is ready
+                progress = await bot.send_message(tid, "🤖 Готовлю рекап… AI пишет блоки, это ~30-60 сек")
+                progress_msgs[tid] = progress.message_id
                 await bot.send_chat_action(tid, "typing")
             except Exception as e:
                 log.debug(f"Failed to notify {tid}: {e}")
@@ -401,10 +405,24 @@ class SessionManager:
 
         recap_text = await _generate_and_save_recap(_get_pool(), session_id_to_end, turdom_number or 0, None)
 
+        # Remove progress placeholders before sending recap
+        for tid, mid in progress_msgs.items():
+            try:
+                await bot.delete_message(tid, mid)
+            except Exception as e:
+                log.debug(f"Failed to delete progress msg for {tid}: {e}")
+
         if recap_text:
             for tid in self.participants:
                 try:
                     await self.send_recap_carousel(tid, recap_text, turdom_number or 0)
+                except Exception as e:
+                    log.debug(f"Failed to notify {tid}: {e}")
+        else:
+            # Generation failed — let users know
+            for tid in self.participants:
+                try:
+                    await send(tid, "❌ Не удалось сгенерировать рекап — попробуй /recap позже")
                 except Exception as e:
                     log.debug(f"Failed to notify {tid}: {e}")
 

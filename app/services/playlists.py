@@ -5,7 +5,7 @@ import asyncpg
 
 from app.spotify.auth import get_spotify
 from app.services.genre_resolver import resolve_and_save_genre
-from app.services.normalize import normalize_title, normalize_artist, is_fuzzy_match
+from app.services.normalize import normalize_title, normalize_artist, is_fuzzy_match, base_title, has_version_marker
 
 log = logging.getLogger(__name__)
 
@@ -63,17 +63,19 @@ async def import_playlist(pool: asyncpg.Pool, playlist_spotify_id: str) -> dict:
                     track_row = await conn.fetchrow(
                         """
                         INSERT INTO tracks (spotify_track_id, title, artist, isrc,
-                                            normalized_title, normalized_artist)
-                        VALUES ($1, $2, $3, $4, $5, $6)
+                                            normalized_title, normalized_artist, normalized_base)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
                         ON CONFLICT (spotify_track_id) DO UPDATE
                         SET title = EXCLUDED.title, artist = EXCLUDED.artist,
                             isrc = COALESCE(EXCLUDED.isrc, tracks.isrc),
                             normalized_title = EXCLUDED.normalized_title,
-                            normalized_artist = EXCLUDED.normalized_artist
+                            normalized_artist = EXCLUDED.normalized_artist,
+                            normalized_base = EXCLUDED.normalized_base
                         RETURNING id
                         """,
                         track.id, title, artist, isrc,
                         normalize_title(title), normalize_artist(artist),
+                        base_title(title),
                     )
                     track_db_id = track_row["id"]
 
@@ -204,6 +206,79 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
                     })
 
     return duplicates
+
+
+async def check_siblings(pool: asyncpg.Pool, spotify_track_id: str,
+                          title: str, artist: str | None = None,
+                          exclude_playlist_id: int | None = None) -> list[dict]:
+    """Find sibling tracks: same base title, but a modified version (remix, sped up, etc.).
+
+    Sibling = matching base_title where at least ONE side has a version marker
+    (so the original and a remix flag each other) AND not the same spotify track.
+    Artist may differ — remixers often relabel the track. Returns list of:
+      {match: 'sibling', title, artist, playlist, playlist_id, url, kind}
+    where kind = 'self' (target is a version, candidate is unmarked = original),
+                 'other' (target is unmarked, candidate is a version),
+                 'both' (both are different versions of the same original).
+
+    exclude_playlist_id: skip siblings inside this playlist (e.g. when the track
+    was added to TURDOM #X — don't alert on coexisting original/remix in same playlist).
+    """
+    target_base = base_title(title)
+    if not target_base:
+        return []
+    target_has_marker = has_version_marker(title)
+
+    # Aggregate per-track: same sibling track may live in multiple playlists.
+    # Returns one entry per track, with playlists joined as comma-separated names.
+    siblings_by_track: dict[str, dict] = {}
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT t.spotify_track_id, t.title, t.artist, t.normalized_base,
+                   p.id as playlist_id, p.name as playlist_name, p.url as playlist_url
+            FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            JOIN playlists p ON pt.playlist_id = p.id
+            WHERE t.normalized_base = $1 AND t.spotify_track_id != $2
+                  AND ($3::int IS NULL OR p.id != $3)
+            """,
+            target_base, spotify_track_id, exclude_playlist_id,
+        )
+        for r in rows:
+            cand_has_marker = has_version_marker(r["title"])
+            # Need at least one side to be a version
+            if not target_has_marker and not cand_has_marker:
+                continue
+            # Skip if the candidate's full normalized title == target's
+            # (those would be regular fuzzy matches, not siblings)
+            if normalize_title(title) == normalize_title(r["title"]):
+                continue
+            if target_has_marker and cand_has_marker:
+                kind = "both"
+            elif target_has_marker:
+                kind = "self"
+            else:
+                kind = "other"
+            sid = r["spotify_track_id"]
+            if sid in siblings_by_track:
+                siblings_by_track[sid]["playlists"].append(r["playlist_name"])
+            else:
+                siblings_by_track[sid] = {
+                    "match": "sibling",
+                    "kind": kind,
+                    "title": r["title"], "artist": r["artist"],
+                    "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
+                    "url": r["playlist_url"],
+                    "playlists": [r["playlist_name"]],
+                }
+    # Collapse 'playlists' list into 'playlist' display string when more than one
+    result = []
+    for s in siblings_by_track.values():
+        if len(s["playlists"]) > 1:
+            s["playlist"] = ", ".join(s["playlists"])
+        result.append(s)
+    return result
 
 
 async def get_track_isrc(spotify_track_id: str) -> str | None:

@@ -33,6 +33,31 @@ _TITLE_STRIP_PATTERNS = [
 
 _TITLE_COMPILED = [re.compile(p, re.IGNORECASE) for p in _TITLE_STRIP_PATTERNS]
 
+# Version markers — modified versions of an original track (siblings, not duplicates)
+# Used by base_title()/has_version_marker() for "alarm but not block" detection.
+_VERSION_KEYWORDS = (
+    r"remix|sped[\s\-]*up|spedup|slowed(?:[\s\-]*(?:and|&)[\s\-]*reverb)?|reverb"
+    r"|nightcore|vip(?:[\s\-]*mix)?|edit|bootleg|bass[\s\-]*boost(?:ed)?|cover"
+    r"|rework|flip|mash[\s\-]*up|mashup|chopped[\s\-]*and[\s\-]*screwed|tiktok"
+    r"|extended[\s\-]*mix|club[\s\-]*mix|radio[\s\-]*mix|dub[\s\-]*mix|instrumental"
+    r"|karaoke|piano[\s\-]*version|orchestral"
+)
+
+_VERSION_PATTERNS = [
+    # Anything in parens that mentions a version keyword (incl. "X's Remix")
+    rf"\s*\(\s*[^)]*\b(?:{_VERSION_KEYWORDS})\b[^)]*\)",
+    # Dash-separated suffix containing a version keyword
+    rf"\s*[-–—]\s*[^-–—]*\b(?:{_VERSION_KEYWORDS})\b[^-–—]*$",
+]
+_VERSION_COMPILED = [re.compile(p, re.IGNORECASE) for p in _VERSION_PATTERNS]
+# Detection only counts when the keyword appears in a version-tag context
+# (parens or dash suffix) — not as a bare word. Avoids false positives like
+# "Cover Me", "The Edit", "Karaoke Night".
+_VERSION_DETECT = re.compile(
+    rf"(?:\([^)]*\b(?:{_VERSION_KEYWORDS})\b[^)]*\)|[-–—][^-–—]*\b(?:{_VERSION_KEYWORDS})\b[^-–—]*$)",
+    re.IGNORECASE,
+)
+
 # Artist name normalization patterns
 _ARTIST_STRIP_PATTERNS = [
     r"\s*&\s*",       # "A & B" → "a b"
@@ -72,6 +97,26 @@ def normalize_artist(artist: str) -> str:
     words = re.sub(r"\s+", " ", result).strip().split()
     words.sort()
     return " ".join(words)
+
+
+def has_version_marker(title: str) -> bool:
+    """True if title contains a version keyword (remix, sped up, slowed, etc).
+
+    Used to flag "modified version" alerts separately from regular duplicates.
+    """
+    return bool(_VERSION_DETECT.search(title))
+
+
+def base_title(title: str) -> str:
+    """Strip version markers + regular tags + lowercase. Used for sibling matching.
+
+    'Song (Sped Up)' and 'Song - VIP Mix' both → 'song'.
+    Different from normalize_title which preserves the version distinction.
+    """
+    result = title.strip()
+    for pattern in _VERSION_COMPILED:
+        result = pattern.sub("", result)
+    return normalize_title(result)
 
 
 def title_words(normalized: str) -> set[str]:
