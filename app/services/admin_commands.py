@@ -264,8 +264,33 @@ async def cmd_recap_regenerate(pool: asyncpg.Pool, turdom_number: int, triggered
     }
 
 
+class RecapProgress:
+    """Tracks recap generation progress for UI updates."""
+
+    def __init__(self):
+        self.completed = 0
+        self.total = 0
+        self.stage = "📊 Считаю статистику..."
+
+    def set_stage(self, stage: str, total: int = 0):
+        self.stage = stage
+        self.total = total
+        self.completed = 0
+
+    def block_done(self, name: str = ""):
+        self.completed += 1
+
+    def render(self) -> str:
+        if self.total <= 0:
+            return self.stage
+        filled = int(self.completed / self.total * 10)
+        bar = "▓" * filled + "░" * (10 - filled)
+        return f"🤖 {bar} {self.completed}/{self.total}\n{self.stage}"
+
+
 async def _generate_and_save_recap(
-    pool: asyncpg.Pool, session_id: int, turdom_number: int, triggered_by: int | None
+    pool: asyncpg.Pool, session_id: int, turdom_number: int, triggered_by: int | None,
+    progress: RecapProgress | None = None,
 ) -> str:
     """Generate structured recap with stats + AI commentary."""
     from app.services.genre_distributor import classify_track
@@ -423,10 +448,14 @@ async def _generate_and_save_recap(
     rebel_info = f"Бунтарь: {rebel} ({max_drops} дропов)" if rebel else "нет"
     killers_info = f"Киллеры: {', '.join(killers)}" if killers else "нет"
 
+    if progress:
+        progress.set_stage("🤖 AI пишет комментарии...", 5)
+
     ai_blocks = await generate_session_recap_blocks(
         total, kept, dropped,
         tracks_for_ai, participant_names,
         mimic_info, rebel_info, killers_info,
+        on_block_done=progress.block_done if progress else None,
     )
 
     # === BUILD MESSAGES ===
@@ -476,6 +505,9 @@ async def _generate_and_save_recap(
         from app.services.ai import _generate_recap_block, _RECAP_BASE_SYSTEM
         import asyncio
 
+        if progress:
+            progress.set_stage("🥚 Анализирую пасхалки...", len(easter_eggs))
+
         async def _gen_egg_block(name: str, secret: str) -> str:
             # Get this person's tracks
             person_tracks = [t for t in tracks_data if t["added_by"] == name]
@@ -493,7 +525,11 @@ async def _generate_and_save_recap(
                 "Прокомментируй с юмором — насколько хитро спрятано, заметили бы другие. "
                 "3-5 предложений."
             )
-            return await _generate_recap_block(ctx, prompt)
+            try:
+                return await _generate_recap_block(ctx, prompt)
+            finally:
+                if progress:
+                    progress.block_done(name)
 
         egg_results = await asyncio.gather(
             *[_gen_egg_block(name, secret) for name, secret in easter_eggs.items()],

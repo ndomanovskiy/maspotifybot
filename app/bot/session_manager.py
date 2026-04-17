@@ -10,6 +10,7 @@ from app.spotify.auth import get_spotify
 from app.spotify.monitor import SpotifyMonitor, TrackInfo
 from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next, create_session_track
 from app.services.ai import generate_track_facts, generate_pre_recap_teaser
+from app.services.admin_commands import RecapProgress
 from app.services.genre_distributor import distribute_session_tracks
 from app.services.track_formatter import build_track_caption
 
@@ -382,18 +383,40 @@ class SessionManager:
                 session_id_to_end,
             )
 
-        # Pre-recap teaser
+        # Pre-recap teaser + progress messages
         teaser = self.cached_pre_recap or "🎧 Ну что, чем всё закончилось? Сейчас узнаем! 🥁"
         progress_msgs: dict[int, int] = {}
+        recap_progress = RecapProgress()
+        initial_text = recap_progress.render()
         for tid in self.participants:
             try:
                 await send(tid, teaser)
-                # Persistent progress msg — edited when recap is ready
-                progress = await bot.send_message(tid, "🤖 Готовлю рекап… AI пишет блоки, это ~30-60 сек")
-                progress_msgs[tid] = progress.message_id
-                await bot.send_chat_action(tid, "typing")
+                msg = await bot.send_message(tid, initial_text)
+                progress_msgs[tid] = msg.message_id
             except Exception as e:
                 log.debug(f"Failed to notify {tid}: {e}")
+
+        # Background task: poll progress and edit messages every 2 sec
+        async def _update_progress():
+            last_text = ""
+            while True:
+                await asyncio.sleep(2)
+                text = recap_progress.render()
+                if text != last_text:
+                    for tid, mid in progress_msgs.items():
+                        try:
+                            await bot.edit_message_text(text, chat_id=tid, message_id=mid)
+                        except Exception:
+                            pass
+                    last_text = text
+                # Keep typing indicator alive
+                for tid in progress_msgs:
+                    try:
+                        await bot.send_chat_action(tid, "typing")
+                    except Exception:
+                        pass
+
+        progress_task = asyncio.create_task(_update_progress())
 
         # Generate full recap
         turdom_number = None
@@ -403,9 +426,19 @@ class SessionManager:
                 session_id_to_end,
             )
 
-        recap_text = await _generate_and_save_recap(_get_pool(), session_id_to_end, turdom_number or 0, None)
+        recap_text = await _generate_and_save_recap(
+            _get_pool(), session_id_to_end, turdom_number or 0, None,
+            progress=recap_progress,
+        )
 
-        # Remove progress placeholders before sending recap
+        # Stop progress updater
+        progress_task.cancel()
+        try:
+            await progress_task
+        except asyncio.CancelledError:
+            pass
+
+        # Remove progress messages before sending recap
         for tid, mid in progress_msgs.items():
             try:
                 await bot.delete_message(tid, mid)
@@ -419,7 +452,6 @@ class SessionManager:
                 except Exception as e:
                     log.debug(f"Failed to notify {tid}: {e}")
         else:
-            # Generation failed — let users know
             for tid in self.participants:
                 try:
                     await send(tid, "❌ Не удалось сгенерировать рекап — попробуй /recap позже")
