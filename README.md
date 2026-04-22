@@ -18,7 +18,7 @@ Telegram bot for **TURDOM** music sessions — weekly Discord calls where a grou
 - **Genre playlists** — 11 genre sub-playlists, auto-distribute kept tracks after session
 - **Session recap** — AI-generated session summary
 - **Statistics** — `/stats` (global), `/mystats` (personal), `/history` (session history with pagination)
-- **Playlist management** — create, archive, reschedule, invite links
+- **Playlist management** — create, archive, reschedule (collaborative access automatic)
 - **Session resilience** — no auto-end on errors, skip guards, race condition protection
 
 ## Stack
@@ -44,7 +44,7 @@ Telegram bot for **TURDOM** music sessions — weekly Discord calls where a grou
 | `/end` | End session (admin) |
 | `/kick @username` | Kick participant (admin) |
 | `/scan` | Force duplicate check (admin) |
-| `/setnextlink <url>` | Set invite link (admin) |
+| `/preview <url>` | Preview track card (admin) |
 | `/reg <spotify_url>` | Register participant (admin) |
 
 ## Setup
@@ -137,7 +137,7 @@ Telegram-бот для музыкальных сессий **TURDOM** — еже
 | `/end` | Завершить сессию (админ) |
 | `/kick @username` | Кикнуть участника (админ) |
 | `/scan` | Принудительная проверка дубликатов (админ) |
-| `/setnextlink <url>` | Установить invite-ссылку (админ) |
+| `/preview <url>` | Превью карточки трека (админ) |
 | `/reg <spotify_url>` | Зарегистрировать участника (админ) |
 
 ## Установка

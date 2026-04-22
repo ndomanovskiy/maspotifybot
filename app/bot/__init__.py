@@ -52,7 +52,7 @@ async def on_theme_input(message: Message):
 
         text = (
             f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
-            f"📎 Collaborative доступ автоматический."
+            f"📎 Совместный доступ включён автоматически."
         )
         await reply(message, text)
 

@@ -239,7 +239,7 @@ sequenceDiagram
         PL->>DB: INSERT playlists (status=upcoming)
         PL-->>AC: {name, number, url}
         AC->>DB: INSERT action_log
-        AC-->>Bot: "Created! Set invite link: /setnextlink"
+        AC-->>Bot: "Created! Collaborative access automatic"
     end
 
     Note over Admin,Spotify: Import Playlist

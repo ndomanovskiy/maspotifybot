@@ -7,7 +7,7 @@
 | `/start` | All | Help menu |
 | `/start history_N` | All | Deeplink to session N details |
 | `/reg <spotify_url>` | All | Register and link Spotify account |
-| `/next` | Registered | Get upcoming/active playlist info + invite link |
+| `/next` | Registered | Get upcoming/active playlist info |
 | `/check <track_url>` | Registered | Check if track is duplicate across all playlists |
 | `/stats` | Registered | Global stats: tracks, playlists, genre breakdown, per-user |
 | `/mystats` | Registered | Personal stats: tracks added, vote ratio, top genres |
@@ -36,7 +36,7 @@
 | `/distribute <N>` | Distribute kept tracks from TURDOM#N to genre playlists |
 | `/recap <N>` | Get/generate AI recap for TURDOM#N |
 | `/close_playlist <N>` | Mark TURDOM#N as listened, update date |
-| `/create_next [theme]` | Create next TURDOM playlist (blocks if open exists) |
+| `/create_next [theme]` | Create next TURDOM playlist (auto-closes previous) |
 
 ## Admin Commands — Management
 
@@ -45,7 +45,6 @@
 | `/import <playlist_url>` | Import single playlist to DB |
 | `/import_all` | Import all TURDOM playlists from Spotify account |
 | `/scan` | Force duplicate scan on active/upcoming playlists |
-| `/setnextlink <url>` | Set collaborative invite URL for upcoming playlist |
 | `/reschedule <DD/MM/YYYY>` | Change upcoming playlist date |
 | `/backfill_genres` | Backfill missing genres for all tracks |
 | `/preview <track>` | Preview track card rendering |
@@ -80,9 +79,7 @@
 
 ```
 /end                    → End session, auto-distribute, generate recap
-/close_playlist 91      → Mark as listened, update date
-/create_next            → Create TURDOM#92 (upcoming)
-/setnextlink <url>      → Set collaborative invite
+/create_next            → Auto-close previous, create TURDOM#92 (upcoming)
 ```
 
 Or manual (if auto-distribute failed):

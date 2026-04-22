@@ -31,7 +31,7 @@ class AdminFakeStore:
 
     def add_playlist(self, *, number, spotify_id, name, status="upcoming"):
         rec = {"id": self._id(), "spotify_id": spotify_id, "name": name,
-               "number": number, "status": status, "invite_url": None}
+               "number": number, "status": status}
         self.playlists.append(rec)
         return rec
 

@@ -53,46 +53,22 @@ class TestIsRegistered:
         assert run(check()) is False
 
 
-class TestNextPlaylistInviteUrl:
+class TestNextPlaylistUrl:
 
-    def test_invite_url_returned_when_set(self):
-        """get_next_playlist should return invite_url when it's set."""
-        store = FakeStore()
-        store.playlists.append({
-            "id": 1, "spotify_id": "sp1", "name": "TURDOM#92",
-            "status": "upcoming", "url": "https://open.spotify.com/playlist/sp1",
-            "invite_url": "https://open.spotify.com/playlist/sp1?pt=abc123",
-            "number": 92, "is_thematic": False,
-        })
-
-        # Simulate what get_next_playlist returns
+    def test_returns_regular_url(self):
+        """get_next_playlist returns regular playlist URL (collaborative via playlist settings)."""
         result = {
             "name": "TURDOM#92",
             "url": "https://open.spotify.com/playlist/sp1",
             "status": "upcoming",
-            "invite_url": "https://open.spotify.com/playlist/sp1?pt=abc123",
         }
-        link = result.get("invite_url") or result["url"]
-        assert link == "https://open.spotify.com/playlist/sp1?pt=abc123"
+        assert result["url"] == "https://open.spotify.com/playlist/sp1"
 
-    def test_falls_back_to_regular_url(self):
-        """When invite_url is None, should use regular url."""
+    def test_no_invite_url_in_result(self):
+        """invite_url is no longer part of get_next_playlist result."""
         result = {
             "name": "TURDOM#92",
             "url": "https://open.spotify.com/playlist/sp1",
             "status": "upcoming",
-            "invite_url": None,
         }
-        link = result.get("invite_url") or result["url"]
-        assert link == "https://open.spotify.com/playlist/sp1"
-
-    def test_empty_invite_url_falls_back(self):
-        """When invite_url is empty string, should use regular url."""
-        result = {
-            "name": "TURDOM#92",
-            "url": "https://open.spotify.com/playlist/sp1",
-            "status": "upcoming",
-            "invite_url": "",
-        }
-        link = result.get("invite_url") or result["url"]
-        assert link == "https://open.spotify.com/playlist/sp1"
+        assert "invite_url" not in result

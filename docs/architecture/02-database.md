@@ -23,7 +23,7 @@ erDiagram
         text status "listened | active | upcoming"
         boolean is_thematic
         integer track_count
-        text invite_url
+        text invite_url "(deprecated, unused)"
         timestamptz created_at
     }
 
