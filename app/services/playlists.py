@@ -153,7 +153,8 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
             spotify_track_id,
         )
         for r in rows:
-            duplicates.append({"match": "exact", "title": r["title"], "artist": r["artist"],
+            duplicates.append({"match": "exact", "spotify_track_id": r["spotify_track_id"],
+                               "title": r["title"], "artist": r["artist"],
                                "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
                                "url": r["playlist_url"]})
 
@@ -171,7 +172,8 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
                 isrc, spotify_track_id,
             )
             for r in rows:
-                duplicates.append({"match": "isrc", "title": r["title"], "artist": r["artist"],
+                duplicates.append({"match": "isrc", "spotify_track_id": r["spotify_track_id"],
+                                   "title": r["title"], "artist": r["artist"],
                                    "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
                                    "url": r["playlist_url"]})
 
@@ -199,11 +201,70 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
                 match_type = is_fuzzy_match(norm_title, cand_norm_title, norm_artist, norm_artist)
                 if match_type:
                     duplicates.append({
-                        "match": match_type,
+                        "match": match_type, "spotify_track_id": r["spotify_track_id"],
                         "title": r["title"], "artist": r["artist"],
                         "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
                         "url": r["playlist_url"],
                     })
+
+    return duplicates
+
+
+async def classify_duplicates(pool: asyncpg.Pool, duplicates: list[dict]) -> list[dict]:
+    """Enrich duplicates with session history to classify them.
+
+    For each duplicate, checks whether the track was played in a session
+    for that playlist. Uses both spotify_track_id and ISRC to handle
+    same-song-different-release cases.
+
+    session_status values (match vote_result from DB):
+      - 'keep'    → was on session and voted keep (real duplicate)
+      - 'drop'    → was on session and voted drop (second chance candidate)
+      - 'phantom' → never played in a session (stale DB record)
+      - 'pending' → session exists but vote not finalized
+    """
+    if not duplicates:
+        return duplicates
+
+    async with pool.acquire() as conn:
+        for d in duplicates:
+            playlist_id = d["playlist_id"]
+            track_id = d["spotify_track_id"]  # must be present — added in check_duplicate
+
+            # Search by spotify_track_id first, then by ISRC for cross-release matches
+            row = await conn.fetchrow(
+                """
+                SELECT st.vote_result
+                FROM session_tracks st
+                JOIN sessions s ON st.session_id = s.id
+                WHERE s.playlist_id = $1 AND st.spotify_track_id = $2
+                ORDER BY s.ended_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                playlist_id, track_id,
+            )
+
+            if row is None and d["match"] == "isrc":
+                # ISRC match: the session may have a different spotify_track_id
+                # for the same song. Look up by any track with same ISRC.
+                row = await conn.fetchrow(
+                    """
+                    SELECT st.vote_result
+                    FROM session_tracks st
+                    JOIN sessions s ON st.session_id = s.id
+                    JOIN tracks t ON st.track_id = t.id
+                    JOIN tracks t2 ON t2.spotify_track_id = $2
+                    WHERE s.playlist_id = $1 AND t.isrc = t2.isrc AND t.isrc IS NOT NULL
+                    ORDER BY s.ended_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    playlist_id, track_id,
+                )
+
+            if row is None:
+                d["session_status"] = "phantom"
+            else:
+                d["session_status"] = row["vote_result"]  # 'keep', 'drop', 'pending'
 
     return duplicates
 

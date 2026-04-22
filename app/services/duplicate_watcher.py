@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import asyncpg
 
 from app.spotify.auth import get_spotify
-from app.services.playlists import check_duplicate, check_siblings, get_track_isrc
+from app.services.playlists import check_duplicate, classify_duplicates, check_siblings, get_track_isrc
 from app.services.ai import generate_track_facts
 from app.services.genre_resolver import resolve_and_save_genre
 from app.services.genre_distributor import check_previously_dropped
@@ -215,6 +215,15 @@ class DuplicateWatcher:
                     if is_thematic:
                         continue
 
+                    # Classify duplicates by session history
+                    duplicates = await classify_duplicates(self._pool, duplicates)
+
+                    # Filter out phantoms (track in DB but never played in session)
+                    real_duplicates = [d for d in duplicates if d.get("session_status") != "phantom"]
+                    if not real_duplicates:
+                        log.debug(f"Skipping phantom duplicate {track.name} in {pl['name']}")
+                        continue
+
                     # Find who added it (Telegram ID + display name)
                     telegram_id = None
                     added_by_name = None
@@ -228,12 +237,17 @@ class DuplicateWatcher:
                                 telegram_id = row["telegram_id"]
                                 added_by_name = display_name(row["telegram_username"], row["telegram_name"])
 
-                    # Split: exact/isrc → auto-remove, fuzzy → ask user
-                    has_exact = any(d["match"] in ("exact", "isrc") for d in duplicates)
-                    fuzzy_only = [d for d in duplicates if d["match"].startswith("fuzzy_")]
+                    # Split by match type and session status
+                    # 'pending' treated as 'keep' — session is active, track is real
+                    has_exact_kept = any(
+                        d["match"] in ("exact", "isrc") and d.get("session_status") in ("keep", "pending")
+                        for d in real_duplicates
+                    )
+                    dropped_only = [d for d in real_duplicates if d.get("session_status") == "drop"]
+                    fuzzy_only = [d for d in real_duplicates if d["match"].startswith("fuzzy_")]
 
-                    if has_exact:
-                        # Auto-remove
+                    if has_exact_kept:
+                        # Hard duplicate: was kept in a session → auto-remove
                         try:
                             await sp.playlist_remove(playlist_spotify_id, [f"spotify:track:{track.id}"])
                             log.info(f"Auto-removed duplicate {track.name} from {pl['name']}")
@@ -249,13 +263,25 @@ class DuplicateWatcher:
                             telegram_id=telegram_id,
                             track_title=track.name,
                             artist=track_artist,
-                            duplicates=duplicates,
+                            duplicates=real_duplicates,
                             playlist_name=pl["name"],
                             track_id=track.id,
                             added_by_name=added_by_name,
                         )
+                    elif dropped_only and self._confirm:
+                        # Soft duplicate: was dropped → ask if they want a second chance
+                        await self._confirm(
+                            telegram_id=telegram_id,
+                            track_title=track.name,
+                            artist=track_artist,
+                            duplicates=dropped_only,
+                            playlist_name=pl["name"],
+                            track_id=track.id,
+                            playlist_spotify_id=playlist_spotify_id,
+                            added_by_name=added_by_name,
+                        )
                     elif fuzzy_only and self._confirm:
-                        # Ask user to confirm
+                        # Fuzzy match — ask user to confirm
                         await self._confirm(
                             telegram_id=telegram_id,
                             track_title=track.name,

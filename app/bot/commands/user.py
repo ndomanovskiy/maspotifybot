@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from app.config import settings
-from app.services.playlists import get_next_playlist, check_duplicate, check_siblings, get_track_isrc
+from app.services.playlists import get_next_playlist, check_duplicate, classify_duplicates, check_siblings, get_track_isrc
 from app.services.track_formatter import format_track, format_album
 from app.services.ai import analyze_easter_egg
 from app.services.genre_distributor import check_previously_dropped
@@ -217,23 +217,29 @@ async def cmd_check(message: Message):
     duplicates = await check_duplicate(get_pool(), track_id, isrc, title=title, artist=artist)
 
     if duplicates:
-        match_labels = {
-            "exact": "🎯 точное совпадение",
-            "isrc": "🔗 тот же трек (другой альбом)",
-            "fuzzy_exact": "🔍 совпадение после нормализации",
-            "fuzzy_contains": "🔍 название содержится",
-            "fuzzy_levenshtein": "🔍 похожее название",
-        }
-        lines = []
-        for d in duplicates:
-            label = match_labels.get(d["match"], d["match"])
-            track_display = format_track(d["title"], d["artist"])
-            lines.append(f"• {track_display}\n  {label} в {d['playlist']}\n  {d['url']}")
-        await reply(
-            message,
-            f"⚠️ <b>Дубликат найден!</b>\n\n" + "\n\n".join(lines),
-        )
-        return
+        duplicates = await classify_duplicates(get_pool(), duplicates)
+        # Filter out phantoms for user-facing display
+        real = [d for d in duplicates if d.get("session_status") != "phantom"]
+        if real:
+            match_labels = {
+                "exact": "🎯 точное совпадение",
+                "isrc": "🔗 тот же трек (другой альбом)",
+                "fuzzy_exact": "🔍 совпадение после нормализации",
+                "fuzzy_contains": "🔍 название содержится",
+                "fuzzy_levenshtein": "🔍 похожее название",
+            }
+            lines = []
+            for d in real:
+                label = match_labels.get(d["match"], d["match"])
+                if d.get("session_status") == "drop":
+                    label = "❌ дропнут ранее"
+                track_display = format_track(d["title"], d["artist"])
+                lines.append(f"• {track_display}\n  {label} в {d['playlist']}\n  {d['url']}")
+            await reply(
+                message,
+                f"⚠️ <b>Дубликат найден!</b>\n\n" + "\n\n".join(lines),
+            )
+            return
 
     # Sibling alert (modified version)
     siblings = await check_siblings(get_pool(), track_id, title or "", artist or "")
@@ -737,6 +743,9 @@ async def on_spotify_link(message: Message):
 
     isrc = await get_track_isrc(track_id)
     duplicates = await check_duplicate(get_pool(), track_id, isrc, title=title, artist=artist)
+    if duplicates:
+        duplicates = await classify_duplicates(get_pool(), duplicates)
+        duplicates = [d for d in duplicates if d.get("session_status") != "phantom"]
 
     # Also check if previously dropped
     drops = await check_previously_dropped(get_pool(), track_id)
@@ -764,6 +773,8 @@ async def on_spotify_link(message: Message):
         lines = []
         for d in duplicates:
             label = match_labels.get(d["match"], d["match"])
+            if d.get("session_status") == "drop":
+                label = "❌ дропнут ранее"
             track_display = format_track(d["title"], d["artist"])
             lines.append(f"  {label} — {track_display}\n  в {d['playlist']}")
         parts.append(f"⚠️ <b>Дубликат!</b>\n" + "\n".join(lines))

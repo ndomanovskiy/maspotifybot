@@ -279,12 +279,34 @@ class TestCheckPlaylistsNewTracks:
 # _check_playlists — duplicate detection & removal
 # ============================================================
 
+async def _classify_as_kept(pool, duplicates):
+    """Test helper: classify all duplicates as 'keep' (real duplicates)."""
+    for d in duplicates:
+        d["session_status"] = "keep"
+    return duplicates
+
+
+async def _classify_as_phantom(pool, duplicates):
+    """Test helper: classify all duplicates as 'phantom'."""
+    for d in duplicates:
+        d["session_status"] = "phantom"
+    return duplicates
+
+
+async def _classify_as_dropped(pool, duplicates):
+    """Test helper: classify all duplicates as 'drop'."""
+    for d in duplicates:
+        d["session_status"] = "drop"
+    return duplicates
+
+
 class TestCheckPlaylistsDuplicates:
 
+    @patch("app.services.duplicate_watcher.classify_duplicates", new_callable=AsyncMock, side_effect=_classify_as_kept)
     @patch("app.services.duplicate_watcher.get_track_isrc", new_callable=AsyncMock, return_value=None)
     @patch("app.services.duplicate_watcher.check_duplicate", new_callable=AsyncMock)
     @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
-    def test_duplicate_removed_from_spotify_and_db(self, mock_get_sp, mock_dup, mock_isrc, store, fake_pool):
+    def test_duplicate_removed_from_spotify_and_db(self, mock_get_sp, mock_dup, mock_isrc, mock_classify, store, fake_pool):
         """When a duplicate is found, track should be removed from Spotify and DB."""
         store.add_playlist(id=1, spotify_id="sp1", name="PL1", status="upcoming", is_thematic=False)
 
@@ -358,10 +380,11 @@ class TestCheckPlaylistsDuplicates:
         sp.playlist_remove.assert_not_called()
         notify.assert_not_called()
 
+    @patch("app.services.duplicate_watcher.classify_duplicates", new_callable=AsyncMock, side_effect=_classify_as_kept)
     @patch("app.services.duplicate_watcher.get_track_isrc", new_callable=AsyncMock, return_value=None)
     @patch("app.services.duplicate_watcher.check_duplicate", new_callable=AsyncMock)
     @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
-    def test_notify_includes_added_by_name(self, mock_get_sp, mock_dup, mock_isrc, store, fake_pool):
+    def test_notify_includes_added_by_name(self, mock_get_sp, mock_dup, mock_isrc, mock_classify, store, fake_pool):
         """Notification should include added_by_name when user is known."""
         store.add_playlist(id=1, spotify_id="sp1", name="PL1", status="upcoming", is_thematic=False)
         store.add_user(telegram_id=123, spotify_id="sp_user", telegram_name="Nikita", telegram_username="ndomanovskiy")
@@ -385,10 +408,11 @@ class TestCheckPlaylistsDuplicates:
         call_kwargs = notify.call_args
         assert call_kwargs.kwargs.get("added_by_name") == "@ndomanovskiy"
 
+    @patch("app.services.duplicate_watcher.classify_duplicates", new_callable=AsyncMock, side_effect=_classify_as_kept)
     @patch("app.services.duplicate_watcher.get_track_isrc", new_callable=AsyncMock, return_value=None)
     @patch("app.services.duplicate_watcher.check_duplicate", new_callable=AsyncMock)
     @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
-    def test_notify_without_added_by(self, mock_get_sp, mock_dup, mock_isrc, store, fake_pool):
+    def test_notify_without_added_by(self, mock_get_sp, mock_dup, mock_isrc, mock_classify, store, fake_pool):
         """When added_by is unknown, added_by_name should be None."""
         store.add_playlist(id=1, spotify_id="sp1", name="PL1", status="upcoming", is_thematic=False)
 
@@ -411,10 +435,11 @@ class TestCheckPlaylistsDuplicates:
         call_kwargs = notify.call_args
         assert call_kwargs.kwargs.get("added_by_name") is None
 
+    @patch("app.services.duplicate_watcher.classify_duplicates", new_callable=AsyncMock, side_effect=_classify_as_kept)
     @patch("app.services.duplicate_watcher.get_track_isrc", new_callable=AsyncMock, return_value=None)
     @patch("app.services.duplicate_watcher.check_duplicate", new_callable=AsyncMock)
     @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
-    def test_added_by_name_falls_back_to_telegram_name(self, mock_get_sp, mock_dup, mock_isrc, store, fake_pool):
+    def test_added_by_name_falls_back_to_telegram_name(self, mock_get_sp, mock_dup, mock_isrc, mock_classify, store, fake_pool):
         """When telegram_username is empty, should use telegram_name."""
         store.add_playlist(id=1, spotify_id="sp1", name="PL1", status="upcoming", is_thematic=False)
         store.add_user(telegram_id=123, spotify_id="sp_user", telegram_name="Nikita", telegram_username="")
@@ -438,10 +463,11 @@ class TestCheckPlaylistsDuplicates:
         call_kwargs = notify.call_args
         assert call_kwargs.kwargs.get("added_by_name") == "Nikita"
 
+    @patch("app.services.duplicate_watcher.classify_duplicates", new_callable=AsyncMock, side_effect=_classify_as_kept)
     @patch("app.services.duplicate_watcher.get_track_isrc", new_callable=AsyncMock, return_value=None)
     @patch("app.services.duplicate_watcher.check_duplicate", new_callable=AsyncMock)
     @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
-    def test_fuzzy_confirm_includes_added_by_name(self, mock_get_sp, mock_dup, mock_isrc, store, fake_pool):
+    def test_fuzzy_confirm_includes_added_by_name(self, mock_get_sp, mock_dup, mock_isrc, mock_classify, store, fake_pool):
         """Fuzzy duplicate confirmation should also include added_by_name."""
         store.add_playlist(id=1, spotify_id="sp1", name="PL1", status="upcoming", is_thematic=False)
         store.add_user(telegram_id=123, spotify_id="sp_user", telegram_name="Nikita", telegram_username="ndomanovskiy")
@@ -465,6 +491,62 @@ class TestCheckPlaylistsDuplicates:
         confirm.assert_called_once()
         call_kwargs = confirm.call_args
         assert call_kwargs.kwargs.get("added_by_name") == "@ndomanovskiy"
+
+    @patch("app.services.duplicate_watcher.classify_duplicates", new_callable=AsyncMock, side_effect=_classify_as_phantom)
+    @patch("app.services.duplicate_watcher.get_track_isrc", new_callable=AsyncMock, return_value=None)
+    @patch("app.services.duplicate_watcher.check_duplicate", new_callable=AsyncMock)
+    @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
+    def test_phantom_duplicate_skipped(self, mock_get_sp, mock_dup, mock_isrc, mock_classify, store, fake_pool):
+        """Phantom duplicates (in DB but never played in session) should be skipped."""
+        store.add_playlist(id=1, spotify_id="sp1", name="PL1", status="upcoming", is_thematic=False)
+
+        track = make_track("dup_track", "Dup Song")
+        item = make_item(track)
+
+        mock_dup.return_value = [
+            {"match": "exact", "title": "Dup Song", "artist": "A", "playlist": "PL_OLD", "playlist_id": 2, "url": "..."}
+        ]
+
+        sp = AsyncMock()
+        sp.playlist_items.return_value = FakePlaylistItems(items=[item])
+        mock_get_sp.return_value = sp
+
+        notify = AsyncMock()
+        watcher = DuplicateWatcher(fake_pool, notify)
+        run(watcher._check_playlists())
+
+        sp.playlist_remove.assert_not_called()
+        notify.assert_not_called()
+        assert store.get_track(1, "dup_track") is not None
+
+    @patch("app.services.duplicate_watcher.classify_duplicates", new_callable=AsyncMock, side_effect=_classify_as_dropped)
+    @patch("app.services.duplicate_watcher.get_track_isrc", new_callable=AsyncMock, return_value=None)
+    @patch("app.services.duplicate_watcher.check_duplicate", new_callable=AsyncMock)
+    @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
+    def test_dropped_duplicate_asks_confirmation(self, mock_get_sp, mock_dup, mock_isrc, mock_classify, store, fake_pool):
+        """Dropped duplicates should ask for confirmation, not auto-remove."""
+        store.add_playlist(id=1, spotify_id="sp1", name="PL1", status="upcoming", is_thematic=False)
+
+        track = make_track("dup_track", "Dup Song")
+        item = make_item(track)
+
+        mock_dup.return_value = [
+            {"match": "exact", "title": "Dup Song", "artist": "A", "playlist": "PL_OLD", "playlist_id": 2, "url": "..."}
+        ]
+
+        sp = AsyncMock()
+        sp.playlist_items.return_value = FakePlaylistItems(items=[item])
+        mock_get_sp.return_value = sp
+
+        notify = AsyncMock()
+        confirm = AsyncMock()
+        watcher = DuplicateWatcher(fake_pool, notify, confirm)
+        run(watcher._check_playlists())
+
+        sp.playlist_remove.assert_not_called()
+        notify.assert_not_called()
+        confirm.assert_called_once()
+        assert store.get_track(1, "dup_track") is not None
 
 
 # ============================================================

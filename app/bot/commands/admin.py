@@ -13,8 +13,8 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from app.config import settings
 from app.spotify.auth import start_oauth, exchange_code, run_oauth_callback_server, get_spotify
 from app.services.playlists import (
-    import_playlist, import_all_turdom, check_duplicate, get_track_isrc,
-    create_next_playlist, reschedule_playlist,
+    import_playlist, import_all_turdom, check_duplicate, classify_duplicates,
+    get_track_isrc, create_next_playlist, reschedule_playlist,
 )
 from app.services.genre_resolver import backfill_genres
 from app.services.ai import generate_track_facts
@@ -276,6 +276,7 @@ async def cmd_scan(message: Message):
         sp = await get_spotify()
         removed_count = 0
         suspicious_count = 0
+        phantom_count = 0
 
         # Pre-fetch all users for display name resolution (avoid N+1)
         user_name_cache: dict[str, str] = {}
@@ -321,39 +322,63 @@ async def cmd_scan(message: Message):
                 ]
 
                 if duplicates:
-                    # Exact/ISRC → auto-remove, fuzzy → just report
-                    has_exact = any(d["match"] in ("exact", "isrc") for d in duplicates)
-                    fuzzy_only = [d for d in duplicates if d["match"].startswith("fuzzy_")]
-                    if not has_exact:
-                        # Fuzzy only — ask user to confirm
-                        if fuzzy_only and _on_fuzzy_confirm:
-                            suspicious_count += 1
-                            await _on_fuzzy_confirm(
+                    # Classify by session history
+                    duplicates = await classify_duplicates(get_pool(), duplicates)
+                    real_duplicates = [d for d in duplicates if d.get("session_status") != "phantom"]
+                    if not real_duplicates:
+                        phantom_count += 1
+                        continue
+
+                    # 'pending' treated as 'keep' — session is active, track is real
+                    has_exact_kept = any(
+                        d["match"] in ("exact", "isrc") and d.get("session_status") in ("keep", "pending")
+                        for d in real_duplicates
+                    )
+                    dropped_only = [d for d in real_duplicates if d.get("session_status") == "drop"]
+                    fuzzy_only = [d for d in real_duplicates if d["match"].startswith("fuzzy_")]
+
+                    track_artist = ", ".join(a.name for a in track.artists)
+
+                    if has_exact_kept:
+                        removed_count += 1
+                        await sp.playlist_remove(pl["spotify_id"], [f"spotify:track:{track.id}"])
+                        async with get_pool().acquire() as conn:
+                            await conn.execute(
+                                "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
+                                pl["id"], track.id,
+                            )
+                        if _on_duplicate_notify:
+                            await _on_duplicate_notify(
                                 telegram_id=None,
                                 track_title=track.name,
-                                artist=", ".join(a.name for a in track.artists),
-                                duplicates=fuzzy_only,
+                                artist=track_artist,
+                                duplicates=real_duplicates,
                                 playlist_name=pl["name"],
                                 track_id=track.id,
-                                playlist_spotify_id=pl["spotify_id"],
                                 added_by_name=added_by_name,
                             )
-                        continue
-                    removed_count += 1
-                    await sp.playlist_remove(pl["spotify_id"], [f"spotify:track:{track.id}"])
-                    async with get_pool().acquire() as conn:
-                        await conn.execute(
-                            "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
-                            pl["id"], track.id,
-                        )
-                    if _on_duplicate_notify:
-                        await _on_duplicate_notify(
+                    elif dropped_only and _on_fuzzy_confirm:
+                        suspicious_count += 1
+                        await _on_fuzzy_confirm(
                             telegram_id=None,
                             track_title=track.name,
-                            artist=", ".join(a.name for a in track.artists),
-                            duplicates=duplicates,
+                            artist=track_artist,
+                            duplicates=dropped_only,
                             playlist_name=pl["name"],
                             track_id=track.id,
+                            playlist_spotify_id=pl["spotify_id"],
+                            added_by_name=added_by_name,
+                        )
+                    elif fuzzy_only and _on_fuzzy_confirm:
+                        suspicious_count += 1
+                        await _on_fuzzy_confirm(
+                            telegram_id=None,
+                            track_title=track.name,
+                            artist=track_artist,
+                            duplicates=fuzzy_only,
+                            playlist_name=pl["name"],
+                            track_id=track.id,
+                            playlist_spotify_id=pl["spotify_id"],
                             added_by_name=added_by_name,
                         )
 
@@ -362,6 +387,8 @@ async def cmd_scan(message: Message):
             parts.append(f"🗑 Удалено: {removed_count}")
         if suspicious_count:
             parts.append(f"🔍 На подтверждение: {suspicious_count}")
+        if phantom_count:
+            parts.append(f"👻 Фантомов пропущено: {phantom_count}")
         if not removed_count and not suspicious_count:
             parts.append("Дубликатов не найдено")
         await message.answer(" ".join(parts))

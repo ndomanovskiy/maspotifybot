@@ -151,10 +151,14 @@ async def setup_bot(pool):
             "fuzzy_exact": "🔍 нормализованное совпадение",
             "fuzzy_contains": "🔍 слова совпадают",
             "fuzzy_levenshtein": "🔍 похожее название",
+            "exact": "🎯 точное",
+            "isrc": "🔗 ISRC",
         }
         dup_links = []
         for d in duplicates:
             label = match_labels.get(d["match"], "🔍 похож")
+            if d.get("session_status") == "drop":
+                label = "❌ дропнут ранее"
             dup_links.append(f"  {label} — <a href=\"{d['url']}\">{d['playlist']}</a>\n  {d['title']} — {d['artist']}")
         dup_text = "\n".join(dup_links)
 
@@ -162,11 +166,18 @@ async def setup_bot(pool):
         track_url = f"https://open.spotify.com/track/{track_id}" if track_id else ""
 
         added_line = f"\n👤 Добавил: {html.escape(added_by_name)}" if added_by_name else ""
+        all_dropped = all(d.get("session_status") == "drop" for d in duplicates)
+        if all_dropped:
+            header = "🔄 <b>Второй шанс?</b>"
+            footer = "Этот трек уже дропали. Оставить?"
+        else:
+            header = "🔍 <b>Возможный дубликат</b>"
+            footer = "Удалить трек из плейлиста?"
         msg = (
-            f"🔍 <b>Возможный дубликат</b>\n\n"
+            f"{header}\n\n"
             f"🎵 {track_fmt}{added_line}\nв <b>{playlist_name}</b>\n\n"
             f"Похож на:\n{dup_text}\n\n"
-            f"Удалить трек из плейлиста?"
+            f"{footer}"
         )
 
         # Encode callback data: confirm_dup:<playlist_spotify_id>:<track_id>
