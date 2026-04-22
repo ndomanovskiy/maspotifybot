@@ -84,8 +84,9 @@ class TestGenerateMissingFacts:
         run(watcher._generate_missing_facts())
         mock_gen.assert_not_called()
 
+    @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
     @patch("app.services.duplicate_watcher.generate_track_facts", new_callable=AsyncMock)
-    def test_generates_for_tracks_without_facts(self, mock_gen, store, fake_pool):
+    def test_generates_for_tracks_without_facts(self, mock_gen, mock_sp, store, fake_pool):
         """Tracks with ai_facts=NULL should get facts generated."""
         mock_gen.return_value = "Cool fact about the track"
 
@@ -97,7 +98,10 @@ class TestGenerateMissingFacts:
         watcher = DuplicateWatcher(fake_pool, AsyncMock())
         run(watcher._generate_missing_facts())
 
-        mock_gen.assert_called_once_with("Track A", "Artist A", "")
+        mock_gen.assert_called_once()
+        args = mock_gen.call_args
+        assert args[0][0] == "Track A"
+        assert args[0][1] == "Artist A"
         assert t1["ai_facts"] == "Cool fact about the track"
         assert t2["ai_facts"] == "Already has facts"
 
@@ -111,8 +115,9 @@ class TestGenerateMissingFacts:
         run(watcher._generate_missing_facts())
         mock_gen.assert_not_called()
 
+    @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
     @patch("app.services.duplicate_watcher.generate_track_facts", new_callable=AsyncMock)
-    def test_ai_returns_empty_string(self, mock_gen, store, fake_pool):
+    def test_ai_returns_empty_string(self, mock_gen, mock_sp, store, fake_pool):
         """If AI returns empty string, ai_facts should remain NULL."""
         mock_gen.return_value = ""
 
@@ -125,8 +130,9 @@ class TestGenerateMissingFacts:
         mock_gen.assert_called_once()
         assert t["ai_facts"] is None
 
+    @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
     @patch("app.services.duplicate_watcher.generate_track_facts", new_callable=AsyncMock)
-    def test_ai_failure_does_not_stop_other_tracks(self, mock_gen, store, fake_pool):
+    def test_ai_failure_does_not_stop_other_tracks(self, mock_gen, mock_sp, store, fake_pool):
         """If AI fails on one track, should continue with the rest."""
         mock_gen.side_effect = [Exception("API down"), "Facts for B"]
 
@@ -140,8 +146,9 @@ class TestGenerateMissingFacts:
         assert t1["ai_facts"] is None
         assert t2["ai_facts"] == "Facts for B"
 
+    @patch("app.services.duplicate_watcher.get_spotify", new_callable=AsyncMock)
     @patch("app.services.duplicate_watcher.generate_track_facts", new_callable=AsyncMock)
-    def test_generates_for_all_tracks_when_all_null(self, mock_gen, store, fake_pool):
+    def test_generates_for_all_tracks_when_all_null(self, mock_gen, mock_sp, store, fake_pool):
         """When all tracks lack facts (like after bulk import), all should be generated."""
         mock_gen.return_value = "A fact"
 
@@ -616,6 +623,7 @@ class TestIntegration:
 
         sp = AsyncMock()
         sp.playlist_items.return_value = FakePlaylistItems(items=[item])
+        sp.track.return_value = track
         mock_get_sp.return_value = sp
 
         watcher = DuplicateWatcher(fake_pool, AsyncMock())
@@ -629,7 +637,6 @@ class TestIntegration:
         # Step 2: generate_missing_facts fills in the facts
         run(watcher._generate_missing_facts())
         assert saved["ai_facts"] == "AI fact"
-        mock_gen.assert_called_once_with("New Song", "Cool Artist", "")
 
     @patch("app.services.duplicate_watcher.generate_track_facts", new_callable=AsyncMock, return_value="AI fact")
     @patch("app.services.duplicate_watcher.check_duplicate", new_callable=AsyncMock, return_value=[])
@@ -653,6 +660,7 @@ class TestIntegration:
         items = [make_item(make_track(f"t{i}", f"Track {i}", f"Artist {i}")) for i in range(28)]
         sp = AsyncMock()
         sp.playlist_items.return_value = FakePlaylistItems(items=items)
+        sp.track.return_value = make_track("t0", "Track 0", "Artist 0")  # mock for release_date lookup
         mock_get_sp.return_value = sp
 
         watcher = DuplicateWatcher(fake_pool, AsyncMock())

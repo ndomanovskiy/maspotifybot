@@ -164,7 +164,7 @@ class DuplicateWatcher:
         async with self._pool.acquire() as conn:
             tracks = await conn.fetch(
                 """
-                SELECT t.id, t.spotify_track_id, t.title, t.artist
+                SELECT t.id, t.spotify_track_id, t.title, t.artist, t.album
                 FROM tracks t
                 JOIN playlist_tracks pt ON pt.track_id = t.id
                 JOIN playlists p ON pt.playlist_id = p.id
@@ -176,10 +176,23 @@ class DuplicateWatcher:
             return
 
         log.info(f"Generating AI facts for {len(tracks)} tracks")
+        sp = await get_spotify()
         async with self._pool.acquire() as conn:
             for t in tracks:
                 try:
-                    facts = await generate_track_facts(t["title"], t["artist"], "")
+                    # Fetch release_date from Spotify
+                    release_date = ""
+                    try:
+                        track_info = await sp.track(t["spotify_track_id"])
+                        if track_info.album and hasattr(track_info.album, "release_date"):
+                            release_date = track_info.album.release_date or ""
+                    except Exception:
+                        pass
+
+                    facts = await generate_track_facts(
+                        t["title"], t["artist"], t["album"] or "",
+                        release_date=release_date,
+                    )
                     if facts:
                         await conn.execute(
                             "UPDATE tracks SET ai_facts = $1 WHERE id = $2",

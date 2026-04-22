@@ -107,6 +107,7 @@ class FakeStore:
                 "spotify_track_id": spotify_track_id,
                 "title": title,
                 "artist": artist,
+                "album": None,
                 "isrc": isrc,
                 "ai_facts": ai_facts,
                 "normalized_title": None,
@@ -195,6 +196,7 @@ class FakeStore:
                     "spotify_track_id": track_rec["spotify_track_id"],
                     "title": track_rec["title"],
                     "artist": track_rec["artist"],
+                    "album": track_rec.get("album"),
                 }))
             return results
 
@@ -211,6 +213,7 @@ class FakeStore:
                             "spotify_track_id": track_rec["spotify_track_id"],
                             "title": track_rec["title"],
                             "artist": track_rec["artist"],
+                            "album": track_rec.get("album"),
                         }))
             return results
 
@@ -260,6 +263,7 @@ class FakeStore:
                 "spotify_track_id": spotify_track_id,
                 "title": title,
                 "artist": artist,
+                "album": None,
                 "isrc": isrc,
                 "ai_facts": None,
                 "normalized_title": normalized_title,
