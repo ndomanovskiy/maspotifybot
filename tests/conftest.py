@@ -138,8 +138,12 @@ class FakeStore:
         # Return the track_rec so tests that mutate it (e.g. checking ai_facts) work
         return track_rec
 
-    def add_user(self, *, telegram_id: int, spotify_id: str):
-        self.users.append({"telegram_id": telegram_id, "spotify_id": spotify_id})
+    def add_user(self, *, telegram_id: int, spotify_id: str,
+                 telegram_name: str = "User", telegram_username: str | None = None):
+        self.users.append({
+            "telegram_id": telegram_id, "spotify_id": spotify_id,
+            "telegram_name": telegram_name, "telegram_username": telegram_username,
+        })
 
     def get_track(self, playlist_id: int, spotify_track_id: str) -> dict | None:
         """Find a track by playlist_id + spotify_track_id.

@@ -16,7 +16,7 @@ from app.services.ai import analyze_easter_egg
 from app.services.genre_distributor import check_previously_dropped
 from app.bot.core import (
     bot, get_pool, is_admin, is_registered, require_registered, extract_spotify_id,
-    reply, send,
+    reply, send, display_name,
 )
 from app.bot.session_manager import session
 
@@ -268,12 +268,12 @@ async def cmd_stats(message: Message):
         total_users = await conn.fetchval("SELECT COUNT(*) FROM users WHERE spotify_id IS NOT NULL")
 
         user_rows = await conn.fetch("""
-            SELECT COALESCE(u.telegram_username, u.telegram_name) as name,
+            SELECT u.telegram_username, u.telegram_name,
                    COUNT(pt.id) as tracks
             FROM users u
             LEFT JOIN playlist_tracks pt ON u.spotify_id = pt.added_by_spotify_id
             WHERE u.spotify_id IS NOT NULL
-            GROUP BY name ORDER BY tracks DESC
+            GROUP BY u.telegram_username, u.telegram_name ORDER BY tracks DESC
         """)
 
         genre_rows = await conn.fetch("""
@@ -303,33 +303,34 @@ async def cmd_stats(message: Message):
 
     async with get_pool().acquire() as conn:
         all_user_genres = await conn.fetch("""
-            SELECT COALESCE(u.telegram_username, u.telegram_name) as name,
+            SELECT u.telegram_username, u.telegram_name,
                    t.genre, COUNT(*) as cnt
             FROM playlist_tracks pt
             JOIN tracks t ON pt.track_id = t.id
             JOIN users u ON u.spotify_id = pt.added_by_spotify_id
             WHERE t.genre IS NOT NULL AND t.genre <> ''
-            GROUP BY name, t.genre ORDER BY name, cnt DESC
+            GROUP BY u.telegram_username, u.telegram_name, t.genre
+            ORDER BY u.telegram_username, u.telegram_name, cnt DESC
         """)
 
     user_genre_map: dict[str, dict[str, int]] = {}
     for r in all_user_genres:
-        name = r["name"]
-        if name not in user_genre_map:
-            user_genre_map[name] = {}
+        uname = display_name(r["telegram_username"], r["telegram_name"])
+        if uname not in user_genre_map:
+            user_genre_map[uname] = {}
         pl = classify_track(r["genre"])
         if pl:
             short = pl.replace("TURDOM ", "")
-            user_genre_map[name][short] = user_genre_map[name].get(short, 0) + r["cnt"]
+            user_genre_map[uname][short] = user_genre_map[uname].get(short, 0) + r["cnt"]
 
     msg2 = "👤 <b>Кто что слушает</b>\n\n"
     for r in user_rows:
-        name = r["name"]
+        uname = display_name(r["telegram_username"], r["telegram_name"])
         tracks = r["tracks"]
-        user_genres = user_genre_map.get(name, {})
+        user_genres = user_genre_map.get(uname, {})
         top3 = sorted(user_genres.items(), key=lambda x: -x[1])[:3]
         top3_str = " · ".join(f"{g} {c}" for g, c in top3)
-        msg2 += f"@{name} — {tracks} треков\n<code>{top3_str}</code>\n\n"
+        msg2 += f"{uname} — {tracks} треков\n<code>{top3_str}</code>\n\n"
 
     await reply(message, msg1)
     await reply(message, msg2)
@@ -352,7 +353,7 @@ async def cmd_mystats(message: Message):
             return
 
         spotify_id = user["spotify_id"]
-        display = f"@{user['telegram_username']}" if user["telegram_username"] else user["telegram_name"]
+        display = display_name(user["telegram_username"], user["telegram_name"])
 
         total = await conn.fetchval(
             "SELECT COUNT(*) FROM playlist_tracks WHERE added_by_spotify_id = $1", spotify_id

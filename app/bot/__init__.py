@@ -116,7 +116,7 @@ async def setup_bot(pool):
     await session.recover()
 
     # Start duplicate watcher
-    async def on_duplicate_found(telegram_id, track_title, artist, duplicates, playlist_name, track_id=None):
+    async def on_duplicate_found(telegram_id, track_title, artist, duplicates, playlist_name, track_id=None, added_by_name=None):
         dup_links = []
         for d in duplicates:
             match_type = "🎯 точное" if d["match"] == "exact" else "🔗 ISRC"
@@ -129,7 +129,8 @@ async def setup_bot(pool):
             pl_row = await conn.fetchrow("SELECT url FROM playlists WHERE name = $1", playlist_name)
         removed_from = f"<a href=\"{pl_row['url']}\">{playlist_name}</a>" if pl_row and pl_row["url"] else playlist_name
 
-        msg = f"🗑 <b>Дубликат удалён!</b>\n\n🎵 {track_fmt}\nУдалён из: {removed_from}\n\nУже был:\n{dup_text}"
+        added_line = f"\n👤 Добавил: {html.escape(added_by_name)}" if added_by_name else ""
+        msg = f"🗑 <b>Дубликат удалён!</b>\n\n🎵 {track_fmt}{added_line}\nУдалён из: {removed_from}\n\nУже был:\n{dup_text}"
 
         if telegram_id:
             try:
@@ -142,7 +143,7 @@ async def setup_bot(pool):
             except Exception as e:
                 log.debug(f"Failed to notify {settings.telegram_admin_id}: {e}")
 
-    async def on_fuzzy_duplicate_confirm(telegram_id, track_title, artist, duplicates, playlist_name, track_id, playlist_spotify_id):
+    async def on_fuzzy_duplicate_confirm(telegram_id, track_title, artist, duplicates, playlist_name, track_id, playlist_spotify_id, added_by_name=None):
         """Ask user to confirm fuzzy duplicate — show buttons."""
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -160,9 +161,10 @@ async def setup_bot(pool):
         track_fmt = format_track(track_title, artist, track_id)
         track_url = f"https://open.spotify.com/track/{track_id}" if track_id else ""
 
+        added_line = f"\n👤 Добавил: {html.escape(added_by_name)}" if added_by_name else ""
         msg = (
             f"🔍 <b>Возможный дубликат</b>\n\n"
-            f"🎵 {track_fmt}\nв <b>{playlist_name}</b>\n\n"
+            f"🎵 {track_fmt}{added_line}\nв <b>{playlist_name}</b>\n\n"
             f"Похож на:\n{dup_text}\n\n"
             f"Удалить трек из плейлиста?"
         )

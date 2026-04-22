@@ -140,6 +140,9 @@ async def edit_caption(chat_id: int, message_id: int, caption: str, **kwargs):
     return await bot.edit_message_caption(chat_id=chat_id, message_id=message_id, caption=caption, parse_mode="HTML", **kwargs)
 
 
+from app.utils import display_name  # re-export for convenience
+
+
 def require_admin_callback(handler):
     """Decorator: only allow admin for callback queries."""
     @wraps(handler)

@@ -13,6 +13,7 @@ from app.services.ai import generate_track_facts, generate_pre_recap_teaser
 from app.services.admin_commands import RecapProgress
 from app.services.genre_distributor import distribute_session_tracks
 from app.services.track_formatter import build_track_caption
+from app.utils import display_name
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ class SessionManager:
                     "SELECT telegram_username, telegram_name FROM users WHERE telegram_id = $1", tid
                 )
                 if row:
-                    name = f"@{row['telegram_username']}" if row["telegram_username"] else row["telegram_name"]
+                    name = display_name(row["telegram_username"], row["telegram_name"])
                     names.append(name)
                 else:
                     names.append(str(tid))
@@ -156,7 +157,7 @@ class SessionManager:
                     "SELECT telegram_username, telegram_name FROM users WHERE spotify_id = $1", info.added_by
                 )
                 if row:
-                    added_by_name = f"@{row['telegram_username']}" if row["telegram_username"] else row["telegram_name"]
+                    added_by_name = display_name(row["telegram_username"], row["telegram_name"])
 
         if added_by_name:
             added_by_text = f"\n👤 {added_by_name}"

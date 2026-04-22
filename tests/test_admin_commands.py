@@ -92,9 +92,10 @@ class AdminFakeConnection:
             for t in s.session_tracks:
                 if t["session_id"] == sid:
                     added_by = t.get("added_by_spotify_id", "?")
+                    from app.utils import display_name
                     for u in s.users:
                         if u["spotify_id"] == added_by:
-                            added_by = f"@{u['telegram_username']}" if u["telegram_username"] else u["telegram_name"]
+                            added_by = display_name(u["telegram_username"], u["telegram_name"])
                             break
                     result.append(FakeRecord({**t, "added_by": added_by}))
             return result

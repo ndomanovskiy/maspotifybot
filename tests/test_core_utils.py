@@ -1,6 +1,7 @@
-"""Tests for app.bot.core — extract_spotify_id, safe_int, parse_turdom_number, GENRE_EMOJIS."""
+"""Tests for app.bot.core — extract_spotify_id, safe_int, parse_turdom_number, display_name, GENRE_EMOJIS."""
 
 from app.bot.core import extract_spotify_id, safe_int, parse_turdom_number
+from app.utils import display_name
 
 
 # ============================================================
@@ -165,3 +166,25 @@ class TestGenreEmojis:
         from app.bot.commands.user import GENRE_EMOJIS
         for genre, emoji in GENRE_EMOJIS.items():
             assert len(emoji) <= 2, f"{genre} emoji '{emoji}' is too long"
+
+
+# ============================================================
+# display_name
+# ============================================================
+
+class TestDisplayName:
+
+    def test_username_preferred(self):
+        assert display_name("ndomanovskiy", "Nikita") == "@ndomanovskiy"
+
+    def test_fallback_to_name(self):
+        assert display_name(None, "Nikita") == "Nikita"
+
+    def test_empty_username_fallback(self):
+        assert display_name("", "Nikita") == "Nikita"
+
+    def test_both_none(self):
+        assert display_name(None, None) == "?"
+
+    def test_name_none_username_set(self):
+        assert display_name("user", None) == "@user"

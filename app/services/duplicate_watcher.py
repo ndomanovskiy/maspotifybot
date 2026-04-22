@@ -10,6 +10,7 @@ from app.services.ai import generate_track_facts
 from app.services.genre_resolver import resolve_and_save_genre
 from app.services.genre_distributor import check_previously_dropped
 from app.services.normalize import normalize_title, normalize_artist, base_title
+from app.utils import display_name
 
 log = logging.getLogger(__name__)
 
@@ -214,15 +215,18 @@ class DuplicateWatcher:
                     if is_thematic:
                         continue
 
-                    # Find who added it (Telegram ID)
+                    # Find who added it (Telegram ID + display name)
                     telegram_id = None
+                    added_by_name = None
                     if added_by:
                         async with self._pool.acquire() as conn:
                             row = await conn.fetchrow(
-                                "SELECT telegram_id FROM users WHERE spotify_id = $1", added_by
+                                "SELECT telegram_id, telegram_username, telegram_name FROM users WHERE spotify_id = $1",
+                                added_by,
                             )
                             if row:
                                 telegram_id = row["telegram_id"]
+                                added_by_name = display_name(row["telegram_username"], row["telegram_name"])
 
                     # Split: exact/isrc → auto-remove, fuzzy → ask user
                     has_exact = any(d["match"] in ("exact", "isrc") for d in duplicates)
@@ -248,6 +252,7 @@ class DuplicateWatcher:
                             duplicates=duplicates,
                             playlist_name=pl["name"],
                             track_id=track.id,
+                            added_by_name=added_by_name,
                         )
                     elif fuzzy_only and self._confirm:
                         # Ask user to confirm
@@ -259,6 +264,7 @@ class DuplicateWatcher:
                             playlist_name=pl["name"],
                             track_id=track.id,
                             playlist_spotify_id=playlist_spotify_id,
+                            added_by_name=added_by_name,
                         )
 
                 # Check if track was previously dropped

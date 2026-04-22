@@ -25,7 +25,7 @@ from app.services.admin_commands import (
 )
 from app.bot.core import (
     get_pool, is_admin, require_admin, extract_spotify_id, parse_turdom_number,
-    reply, send, reply_photo,
+    reply, send, reply_photo, display_name,
 )
 from app.bot.session_manager import session
 
@@ -277,6 +277,15 @@ async def cmd_scan(message: Message):
         removed_count = 0
         suspicious_count = 0
 
+        # Pre-fetch all users for display name resolution (avoid N+1)
+        user_name_cache: dict[str, str] = {}
+        async with get_pool().acquire() as conn:
+            user_rows = await conn.fetch(
+                "SELECT spotify_id, telegram_username, telegram_name FROM users WHERE spotify_id IS NOT NULL"
+            )
+            for u in user_rows:
+                user_name_cache[u["spotify_id"]] = display_name(u["telegram_username"], u["telegram_name"])
+
         for pl in playlists:
             all_items = []
             offset = 0
@@ -291,6 +300,11 @@ async def cmd_scan(message: Message):
                 if not item.track or not item.track.id:
                     continue
                 track = item.track
+
+                # Resolve who added this track (from cache)
+                added_by_spotify = item.added_by.id if item.added_by else None
+                added_by_name = user_name_cache.get(added_by_spotify) if added_by_spotify else None
+
                 isrc = None
                 if hasattr(track, "external_ids") and track.external_ids:
                     isrc = getattr(track.external_ids, "isrc", None)
@@ -322,6 +336,7 @@ async def cmd_scan(message: Message):
                                 playlist_name=pl["name"],
                                 track_id=track.id,
                                 playlist_spotify_id=pl["spotify_id"],
+                                added_by_name=added_by_name,
                             )
                         continue
                     removed_count += 1
@@ -339,6 +354,7 @@ async def cmd_scan(message: Message):
                             duplicates=duplicates,
                             playlist_name=pl["name"],
                             track_id=track.id,
+                            added_by_name=added_by_name,
                         )
 
         parts = [f"✅ Сканирование завершено!"]
