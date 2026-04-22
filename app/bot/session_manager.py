@@ -90,12 +90,7 @@ class SessionManager:
             return
 
         if info.track_id in self.played_track_ids:
-            log.info(f"Track {info.track_id} already played — skipping")
-            try:
-                sp = await get_spotify()
-                await sp.playback_next()
-            except Exception as e:
-                log.error(f"Failed to skip already played track: {e}")
+            log.info(f"Track {info.track_id} already played — ignoring (no auto-skip)")
             return
 
         self.played_track_ids.add(info.track_id)
@@ -362,8 +357,8 @@ class SessionManager:
                 self.active_session_id,
             )
 
-        # Don't prompt if we haven't heard most of the playlist yet
-        if pending == 0 and playlist_total > 0 and voted >= playlist_total * 0.8:
+        # Only prompt when ALL playlist tracks have been voted on (no pending, no unplayed)
+        if pending == 0 and playlist_total > 0 and voted >= playlist_total:
             try:
                 sp = await get_spotify()
                 await sp.playback_pause()
@@ -372,13 +367,33 @@ class SessionManager:
                 log.warning(f"Failed to pause playback: {e}")
 
             self.session_end_prompted = True
+
+            # Build stats for the completion message
+            async with _get_pool().acquire() as conn:
+                kept = await conn.fetchval(
+                    "SELECT COUNT(*) FROM session_tracks WHERE session_id = $1 AND vote_result = 'keep'",
+                    self.active_session_id,
+                )
+                dropped = await conn.fetchval(
+                    "SELECT COUNT(*) FROM session_tracks WHERE session_id = $1 AND vote_result = 'drop'",
+                    self.active_session_id,
+                )
+
+            stats_text = (
+                f"📊 <b>Статус сессии:</b>\n"
+                f"🎵 Треков в плейлисте: {playlist_total}\n"
+                f"🗳 Проголосовано: {voted} из {playlist_total}\n"
+                f"✅ Keep: {kept} · ❌ Drop: {dropped}\n"
+                f"👥 Участников: {len(self.participants)}"
+            )
+
             end_kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🏁 Завершить сессию", callback_data="confirm_end"),
                 InlineKeyboardButton(text="▶️ Продолжить", callback_data="continue_session"),
             ]])
             await send(
                 settings.telegram_admin_id,
-                "⏸ <b>Все треки оценены!</b> Плейлист на паузе.\n\nЗавершить сессию?",
+                f"⏸ <b>Все треки оценены!</b> Плейлист на паузе.\n\n{stats_text}\n\nЗавершить сессию?",
                 reply_markup=end_kb,
             )
 
