@@ -346,8 +346,15 @@ async def create_next_playlist(pool: asyncpg.Pool, theme: str | None = None) -> 
     playlist_spotify_id = pl.id
     url = f"https://open.spotify.com/playlist/{playlist_spotify_id}"
 
-    # Register in DB
+    # Register in DB and close previous open playlists
     async with pool.acquire() as conn:
+        # Close any active/upcoming playlists (lifecycle: new created = old is done)
+        closed = await conn.fetch(
+            "UPDATE playlists SET status = 'listened' WHERE status IN ('active', 'upcoming') RETURNING number, name",
+        )
+        for row in closed:
+            log.info(f"Auto-closed playlist: {row['name']} (TURDOM#{row['number']})")
+
         await conn.execute(
             """
             INSERT INTO playlists (spotify_id, name, number, url, status, is_thematic, track_count)
