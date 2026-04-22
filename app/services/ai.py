@@ -52,9 +52,6 @@ async def _call_llm(system: str, user_content: str, max_tokens: int) -> tuple[st
         except anthropic.APIStatusError as e:
             if e.status_code == 529:
                 log.warning(f"Anthropic overloaded (529), skipping")
-                # TODO: uncomment to enable GPT-4o fallback
-                # if settings.openai_api_key:
-                #     return await _call_openai_fallback(system, user_content, max_tokens)
                 return "", "error"
             else:
                 raise
