@@ -281,7 +281,12 @@ class SessionManager:
         keep_text = f"✅ Keep ({keep_count})" if keep_count > 0 else "✅ Keep"
         drop_text = f"❌ Drop ({drop_count})" if drop_count > 0 else "❌ Drop"
 
-        extra_row = [InlineKeyboardButton(text="🔥", callback_data=f"fire:{session_track_id}")]
+        async with _get_pool().acquire() as conn:
+            fire_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM track_reactions WHERE session_track_id = $1", session_track_id
+            )
+        fire_text = f"🔥 ({fire_count})" if fire_count > 0 else "🔥"
+        extra_row = [InlineKeyboardButton(text=fire_text, callback_data=f"fire:{session_track_id}")]
         if stid:
             extra_row.append(InlineKeyboardButton(text="🎧 Spotify", url=f"https://open.spotify.com/track/{stid}"))
 
