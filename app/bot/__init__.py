@@ -33,11 +33,23 @@ async def on_theme_input(message: Message):
     session.waiting_theme = False
 
     from app.services.playlists import create_next_playlist
+    from app.services.admin_commands import log_action
     from app.bot.core import get_pool
 
     theme = message.text.strip()
     try:
         result = await create_next_playlist(get_pool(), theme=theme)
+
+        # Log auto-closed playlists
+        for closed in result.get("auto_closed", []):
+            await log_action(
+                get_pool(), "auto_close_playlist",
+                turdom_number=closed["number"],
+                playlist_id=closed["id"],
+                triggered_by=message.from_user.id,
+                result={"name": closed["name"], "reason": "create_next_theme"},
+            )
+
         text = (
             f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
             f"📎 Открой плейлист в Spotify → Invite Collaborators → скинь ссылку сюда:\n"

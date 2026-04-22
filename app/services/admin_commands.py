@@ -625,28 +625,18 @@ async def cmd_close_playlist(pool: asyncpg.Pool, turdom_number: int, triggered_b
 # ---------------------------------------------------------------------------
 
 async def cmd_create_next(pool: asyncpg.Pool, theme: str | None = None, triggered_by: int | None = None) -> dict:
-    """Create next TURDOM playlist. Hard-blocks if open playlist exists."""
-    async with pool.acquire() as conn:
-        open_pl = await conn.fetchrow(
-            "SELECT name, number, status FROM playlists WHERE status IN ('active', 'upcoming') ORDER BY number DESC LIMIT 1"
-        )
-
-    if open_pl:
-        await log_action(
-            pool, "create_next",
-            triggered_by=triggered_by,
-            status="blocked",
-            result={"reason": "open_playlist", "name": open_pl["name"]},
-        )
-        return {
-            "status": "blocked",
-            "message": (
-                f"🚫 Есть открытый плейлист: {open_pl['name']} ({open_pl['status']}).\n"
-                f"Сначала закрой через /close_playlist {open_pl['number']}"
-            ),
-        }
-
+    """Create next TURDOM playlist. Auto-closes any open playlists."""
     result = await create_next_playlist(pool, theme=theme)
+
+    # Log auto-closed playlists
+    for closed in result.get("auto_closed", []):
+        await log_action(
+            pool, "auto_close_playlist",
+            turdom_number=closed["number"],
+            playlist_id=closed["id"],
+            triggered_by=triggered_by,
+            result={"name": closed["name"], "reason": "create_next"},
+        )
 
     # Get participants from last ended session to notify them
     async with pool.acquire() as conn:

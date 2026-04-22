@@ -421,13 +421,20 @@ class TestClosePlaylist:
 # ---------------------------------------------------------------------------
 
 class TestCreateNext:
-    def test_blocked_by_open_playlist(self, admin_store, admin_pool):
+    @patch("app.services.admin_commands.create_next_playlist")
+    def test_auto_closes_open_playlist(self, mock_create, admin_store, admin_pool):
         from app.services.admin_commands import cmd_create_next
+
+        async def fake_create(*a, **kw):
+            return {"name": "TURDOM#92 09/04/2026", "number": 92,
+                    "url": "https://open.spotify.com/playlist/sp_92", "spotify_id": "sp_92",
+                    "auto_closed": [{"id": 1, "number": 91, "name": "TURDOM#91"}]}
+        mock_create.side_effect = fake_create
+
         admin_store.add_playlist(number=91, spotify_id="sp_91", name="TURDOM#91", status="upcoming")
         result = run(cmd_create_next(admin_pool))
-        assert result["status"] == "blocked"
-        assert "Есть открытый плейлист" in result["message"]
-        assert "/close_playlist 91" in result["message"]
+        assert result["status"] == "ok"
+        assert "TURDOM#92" in result["message"]
 
     @patch("app.services.admin_commands.create_next_playlist")
     def test_success(self, mock_create, admin_store, admin_pool):
@@ -435,7 +442,8 @@ class TestCreateNext:
 
         async def fake_create(*a, **kw):
             return {"name": "TURDOM#92 09/04/2026", "number": 92,
-                    "url": "https://open.spotify.com/playlist/sp_92", "spotify_id": "sp_92"}
+                    "url": "https://open.spotify.com/playlist/sp_92", "spotify_id": "sp_92",
+                    "auto_closed": []}
         mock_create.side_effect = fake_create
 
         admin_store.add_playlist(number=91, spotify_id="sp_91", name="TURDOM#91", status="listened")

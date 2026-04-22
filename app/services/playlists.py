@@ -346,25 +346,28 @@ async def create_next_playlist(pool: asyncpg.Pool, theme: str | None = None) -> 
     playlist_spotify_id = pl.id
     url = f"https://open.spotify.com/playlist/{playlist_spotify_id}"
 
-    # Register in DB and close previous open playlists
+    # Register in DB and close previous open playlists (atomic)
     async with pool.acquire() as conn:
-        # Close any active/upcoming playlists (lifecycle: new created = old is done)
-        closed = await conn.fetch(
-            "UPDATE playlists SET status = 'listened' WHERE status IN ('active', 'upcoming') RETURNING number, name",
-        )
-        for row in closed:
-            log.info(f"Auto-closed playlist: {row['name']} (TURDOM#{row['number']})")
+        async with conn.transaction():
+            # Close any active/upcoming playlists (lifecycle: new created = old is done)
+            closed = await conn.fetch(
+                "UPDATE playlists SET status = 'listened' WHERE status IN ('active', 'upcoming') RETURNING id, number, name",
+            )
+            for row in closed:
+                log.info(f"Auto-closed playlist: {row['name']} (TURDOM#{row['number']})")
 
-        await conn.execute(
-            """
-            INSERT INTO playlists (spotify_id, name, number, url, status, is_thematic, track_count)
-            VALUES ($1, $2, $3, $4, 'upcoming', $5, 0)
-            """,
-            playlist_spotify_id, name, next_number, url, is_thematic,
-        )
+            await conn.execute(
+                """
+                INSERT INTO playlists (spotify_id, name, number, url, status, is_thematic, track_count)
+                VALUES ($1, $2, $3, $4, 'upcoming', $5, 0)
+                """,
+                playlist_spotify_id, name, next_number, url, is_thematic,
+            )
 
+    auto_closed = [{"id": r["id"], "number": r["number"], "name": r["name"]} for r in closed]
     log.info(f"Created playlist: {name} ({playlist_spotify_id})")
-    return {"name": name, "number": next_number, "url": url, "spotify_id": playlist_spotify_id}
+    return {"name": name, "number": next_number, "url": url, "spotify_id": playlist_spotify_id,
+            "auto_closed": auto_closed}
 
 
 async def reschedule_playlist(pool: asyncpg.Pool, new_date: str) -> dict | None:

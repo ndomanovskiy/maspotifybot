@@ -13,7 +13,7 @@ from app.services.voting import record_vote, remove_track_from_playlist, skip_to
 from app.services.playlists import create_next_playlist
 from app.services.ai import generate_track_facts
 from app.services.track_formatter import format_track
-from app.services.admin_commands import cmd_distribute_force, cmd_recap_regenerate
+from app.services.admin_commands import cmd_distribute_force, cmd_recap_regenerate, log_action
 from app.bot.core import (
     get_pool, is_admin, is_registered,
     require_admin_callback, send, safe_int, _NO_PREVIEW,
@@ -356,6 +356,17 @@ async def on_create_playlist(callback: CallbackQuery):
     await callback.answer("Создаю...")
     try:
         result = await create_next_playlist(get_pool())
+
+        # Log auto-closed playlists
+        for closed in result.get("auto_closed", []):
+            await log_action(
+                get_pool(), "auto_close_playlist",
+                turdom_number=closed["number"],
+                playlist_id=closed["id"],
+                triggered_by=callback.from_user.id,
+                result={"name": closed["name"], "reason": "create_next_callback"},
+            )
+
         text = (
             f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
             f"📎 Открой плейлист в Spotify → Invite Collaborators → скинь ссылку сюда:\n"
