@@ -647,6 +647,59 @@ class TestVoteResultField:
         result = state.vote(1, 1, "keep")
         assert result["vote_result"] is None
 
+
+# ============================================================
+# Test: track not in playlist detection
+# ============================================================
+
+class TestTrackNotInPlaylist:
+    """Verify the in_playlist check logic used by on_track_change."""
+
+    def test_track_in_playlist_detected(self):
+        """Track that exists in playlist_tracks should be detected."""
+        import asyncio
+        from tests.conftest import FakeStore, FakePool
+
+        store = FakeStore()
+        store.add_playlist(id=1, spotify_id="sp_pl1", name="PL1", status="active", is_thematic=False)
+        store.add_track(playlist_id=1, spotify_track_id="t1", title="Song", artist="A")
+        pool = FakePool(store)
+
+        async def check():
+            async with pool.acquire() as conn:
+                return await conn.fetchval(
+                    """SELECT EXISTS(
+                        SELECT 1 FROM playlist_tracks pt
+                        JOIN playlists p ON pt.playlist_id = p.id
+                        WHERE p.spotify_id = $1 AND pt.spotify_track_id = $2
+                    )""",
+                    "sp_pl1", "t1",
+                )
+
+        assert asyncio.get_event_loop().run_until_complete(check()) is True
+
+    def test_track_not_in_playlist_detected(self):
+        """Track not in playlist_tracks should return False."""
+        import asyncio
+        from tests.conftest import FakeStore, FakePool
+
+        store = FakeStore()
+        store.add_playlist(id=1, spotify_id="sp_pl1", name="PL1", status="active", is_thematic=False)
+        pool = FakePool(store)
+
+        async def check():
+            async with pool.acquire() as conn:
+                return await conn.fetchval(
+                    """SELECT EXISTS(
+                        SELECT 1 FROM playlist_tracks pt
+                        JOIN playlists p ON pt.playlist_id = p.id
+                        WHERE p.spotify_id = $1 AND pt.spotify_track_id = $2
+                    )""",
+                    "sp_pl1", "unknown_track",
+                )
+
+        assert asyncio.get_event_loop().run_until_complete(check()) is False
+
     def test_threshold_field_in_result(self):
         """Result should include threshold for handlers to use."""
         state = SessionState(participants=[1, 2, 3, 4])

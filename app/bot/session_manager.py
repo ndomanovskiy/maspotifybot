@@ -139,6 +139,35 @@ class SessionManager:
                     except Exception as e:
                         log.debug(f"Failed to edit message: {e}")
 
+        # Check if track is in the playlist (not random autoplay / accidental play)
+        async with _get_pool().acquire() as conn:
+            in_playlist = await conn.fetchval(
+                """SELECT EXISTS(
+                    SELECT 1 FROM playlist_tracks pt
+                    JOIN playlists p ON pt.playlist_id = p.id
+                    WHERE p.spotify_id = $1 AND pt.spotify_track_id = $2
+                )""",
+                self.active_playlist_id, info.track_id,
+            )
+        if not in_playlist:
+            log.info(f"Track {info.track_id} not in playlist — showing info only")
+            track_fmt = build_track_caption(info.title, info.artist, info.album or "", info.track_id)
+            skip_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"skip_ext:{info.track_id}"),
+            ]])
+            for tid in self.participants:
+                try:
+                    if info.cover_url:
+                        await send_photo(tid, info.cover_url,
+                                         f"⚠️ <b>Трек не из плейлиста</b>\n\n{track_fmt}",
+                                         reply_markup=skip_kb)
+                    else:
+                        await send(tid, f"⚠️ <b>Трек не из плейлиста</b>\n\n{track_fmt}",
+                                   reply_markup=skip_kb)
+                except Exception as e:
+                    log.debug(f"Failed to notify {tid}: {e}")
+            return
+
         session_track_id = await create_session_track(_get_pool(), self.active_session_id, info)
         self.current_session_track_id = session_track_id
 

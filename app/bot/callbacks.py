@@ -162,6 +162,14 @@ async def on_skip(callback: CallbackQuery):
     await skip_to_next()
 
 
+@router.callback_query(F.data.startswith("skip_ext:"))
+@require_admin_callback
+async def on_skip_external(callback: CallbackQuery):
+    """Skip a track that is not in the playlist."""
+    await callback.answer("⏭ Скипаю...")
+    await skip_to_next()
+
+
 # ── Fire reaction 🔥 ───────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("fire:"))

@@ -224,9 +224,20 @@ class FakeStore:
             return any(u["telegram_id"] == tid for u in self.users)
 
         if "select exists" in q and "playlist_tracks" in q:
-            pid, tid = args[0], args[1]
-            return any(t["playlist_id"] == pid and t["spotify_track_id"] == tid
-                       for t in self.playlist_tracks)
+            if "p.spotify_id" in q or "playlists" in q:
+                # JOIN playlists: args are (playlist_spotify_id, track_spotify_id)
+                playlist_spotify_id, track_spotify_id = args[0], args[1]
+                for p in self.playlists:
+                    if p["spotify_id"] == playlist_spotify_id:
+                        if any(pt["playlist_id"] == p["id"] and pt["spotify_track_id"] == track_spotify_id
+                               for pt in self.playlist_tracks):
+                            return True
+                return False
+            else:
+                # Direct: args are (playlist_id, track_spotify_id)
+                pid, tid = args[0], args[1]
+                return any(t["playlist_id"] == pid and t["spotify_track_id"] == tid
+                           for t in self.playlist_tracks)
 
         # INSERT INTO tracks ... RETURNING id
         if "insert into tracks" in q and "returning id" in q:
