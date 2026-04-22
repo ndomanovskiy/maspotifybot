@@ -537,6 +537,17 @@ class SessionManager:
             log.warning(f"Failed to log end_session action: {e}")
 
         # Offer to create next playlist
+        async with _get_pool().acquire() as conn:
+            max_num = await conn.fetchval("SELECT MAX(number) FROM playlists")
+        next_number = (max_num or 0) + 1
+        milestone = ""
+        if next_number % 100 == 0:
+            milestone = " (💯 юбилейный!)"
+        elif next_number % 10 == 0:
+            milestone = " (🎉 круглый!)"
+        elif next_number % 5 == 0:
+            milestone = " (✋ кратный 5)"
+
         post_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📋 Обычный", callback_data="create_playlist:normal"),
              InlineKeyboardButton(text="🎭 Тематический", callback_data="create_playlist:thematic")],
@@ -544,7 +555,7 @@ class SessionManager:
         ])
         await send(
             settings.telegram_admin_id,
-            "🆕 Создать следующий плейлист?",
+            f"🆕 Создать TURDOM#{next_number}?{milestone}",
             reply_markup=post_kb,
         )
 
