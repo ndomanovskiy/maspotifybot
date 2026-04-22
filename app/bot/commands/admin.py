@@ -477,20 +477,6 @@ async def cmd_playlist(message: Message):
     elif sub == "status":
         await _playlist_status(message)
 
-    elif sub == "link":
-        if not rest or "spotify.com/playlist" not in rest:
-            await reply(message, "Скинь invite-ссылку:\n<code>/playlist link https://open.spotify.com/playlist/...?pt=...</code>")
-            return
-        async with get_pool().acquire() as conn:
-            updated = await conn.fetchval(
-                "UPDATE playlists SET invite_url = $1 WHERE status = 'upcoming' RETURNING name",
-                rest,
-            )
-        if updated:
-            await reply(message, f"✅ Invite-ссылка сохранена для <b>{updated}</b>")
-        else:
-            await message.answer("❌ Нет upcoming плейлиста в базе.")
-
     elif sub == "reschedule":
         if not rest or not re.match(r"\d{2}/\d{2}/\d{4}", rest):
             await message.answer("Формат: /playlist reschedule ДД/ММ/ГГГГ")
@@ -508,7 +494,6 @@ async def cmd_playlist(message: Message):
             "/playlist create <code>[тема]</code> — создать следующий\n"
             "/playlist close <code>номер</code> — закрыть плейлист\n"
             "/playlist status — статус плейлиста\n"
-            "/playlist link <code>url</code> — invite-ссылка\n"
             "/playlist reschedule <code>ДД/ММ/ГГГГ</code> — перенести дату",
         )
 

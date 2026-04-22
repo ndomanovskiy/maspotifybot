@@ -368,9 +368,7 @@ async def on_create_playlist(callback: CallbackQuery):
             )
 
         text = (
-            f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
-            f"📎 Открой плейлист в Spotify → Invite Collaborators → скинь ссылку сюда:\n"
-            f"<code>/playlist link ссылка</code>"
+            f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}"
         )
         await callback.message.edit_text(text, parse_mode="HTML")
 

@@ -663,8 +663,7 @@ async def cmd_create_next(pool: asyncpg.Pool, theme: str | None = None, triggere
         "message": (
             f"✅ Создан: {result['name']}\n\n"
             f"{result['url']}\n\n"
-            f"📎 Открой плейлист в Spotify → Invite Collaborators → скинь ссылку:\n"
-            f"/playlist link &lt;ссылка&gt;"
+            f"📎 Ссылка для участников — collaborative доступ автоматический."
         ),
         "playlist": result,
         "notify_ids": participant_ids,

@@ -122,10 +122,9 @@ async def cmd_reg(message: Message):
 async def cmd_next(message: Message):
     result = await get_next_playlist(get_pool())
     if result:
-        link = result.get("invite_url") or result["url"]
         await reply(
             message,
-            f"🎧 <b>{result['name']}</b> ({result['status']})\n\n{link}",
+            f"🎧 <b>{result['name']}</b> ({result['status']})\n\n{result['url']}",
         )
     else:
         await message.answer("Нет предстоящих плейлистов в базе.")

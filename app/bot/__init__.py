@@ -52,8 +52,7 @@ async def on_theme_input(message: Message):
 
         text = (
             f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
-            f"📎 Открой плейлист в Spotify → Invite Collaborators → скинь ссылку сюда:\n"
-            f"<code>/playlist link ссылка</code>"
+            f"📎 Collaborative доступ автоматический."
         )
         await reply(message, text)
 
