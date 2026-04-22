@@ -86,37 +86,10 @@ async def on_continue_session(callback: CallbackQuery):
     await callback.message.edit_text("▶️ Продолжаем прослушивание!", parse_mode="HTML")
 
 
-# ── Voting ──────────────────────────────────────────────────────
+# ── Shared post-vote logic ─────────────────────────────────────
 
-@router.callback_query(F.data.startswith("vote:"))
-async def on_vote(callback: CallbackQuery):
-    if not await is_registered(callback.from_user.id):
-        await callback.answer("⛔ Только для участников", show_alert=True)
-        return
-    parts = callback.data.split(":")
-    if len(parts) != 3:
-        await callback.answer("Ошибка")
-        return
-
-    vote_type = parts[1]
-    session_track_id = safe_int(parts[2])
-    if session_track_id is None:
-        await callback.answer("Ошибка")
-        return
-
-    result = await record_vote(get_pool(), session_track_id, callback.from_user.id, vote_type, session_id=session.active_session_id)
-
-    if result["status"] == "already_voted":
-        await callback.answer("Ты уже голосовал за этот трек!")
-        return
-
-    if result["status"] == "vote_changed":
-        emoji = "✅" if vote_type == "keep" else "❌"
-        await callback.answer(f"{emoji} Голос изменён!")
-    else:
-        emoji = "✅" if vote_type == "keep" else "❌"
-        await callback.answer(f"{emoji} Голос засчитан!")
-
+async def _process_vote_result(session_track_id: int, result: dict):
+    """Handle vote result: update buttons, finalize card, remove/skip if needed."""
     await session.update_vote_buttons(session_track_id)
 
     if result["total_votes"] < result.get("participants", len(session.participants)):
@@ -151,6 +124,40 @@ async def on_vote(callback: CallbackQuery):
             log.error(f"Failed to skip: {e}")
 
     await session.check_session_complete()
+
+
+# ── Voting ──────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("vote:"))
+async def on_vote(callback: CallbackQuery):
+    if not await is_registered(callback.from_user.id):
+        await callback.answer("⛔ Только для участников", show_alert=True)
+        return
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer("Ошибка")
+        return
+
+    vote_type = parts[1]
+    session_track_id = safe_int(parts[2])
+    if session_track_id is None:
+        await callback.answer("Ошибка")
+        return
+
+    result = await record_vote(get_pool(), session_track_id, callback.from_user.id, vote_type, session_id=session.active_session_id)
+
+    if result["status"] == "already_voted":
+        await callback.answer("Ты уже голосовал за этот трек!")
+        return
+
+    if result["status"] == "vote_changed":
+        emoji = "✅" if vote_type == "keep" else "❌"
+        await callback.answer(f"{emoji} Голос изменён!")
+    else:
+        emoji = "✅" if vote_type == "keep" else "❌"
+        await callback.answer(f"{emoji} Голос засчитан!")
+
+    await _process_vote_result(session_track_id, result)
 
 
 # ── Skip ────────────────────────────────────────────────────────
@@ -206,7 +213,16 @@ async def on_fire(callback: CallbackQuery):
             count = await conn.fetchval(
                 "SELECT COUNT(*) FROM track_reactions WHERE session_track_id = $1", session_track_id,
             )
-            await callback.answer(f"🔥 ({count})")
+            # 🔥 = auto-keep vote from the person who fired
+            vote_result = await record_vote(
+                get_pool(), session_track_id, callback.from_user.id, "keep",
+                session_id=session.active_session_id,
+            )
+            if vote_result["status"] == "already_voted":
+                await callback.answer(f"🔥 ({count})")
+            else:
+                await callback.answer(f"🔥 ({count}) + keep")
+                await _process_vote_result(session_track_id, vote_result)
 
 
 # ── Regen facts ─────────────────────────────────────────────────
