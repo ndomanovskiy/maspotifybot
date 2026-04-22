@@ -546,7 +546,8 @@ class TestCheckPlaylistsDuplicates:
         sp.playlist_remove.assert_not_called()
         notify.assert_not_called()
         confirm.assert_called_once()
-        assert store.get_track(1, "dup_track") is not None
+        # Duplicate not saved to DB (check-before-save)
+        assert store.get_track(1, "dup_track") is None
 
 
 # ============================================================

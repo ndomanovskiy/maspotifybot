@@ -67,6 +67,87 @@ class DuplicateWatcher:
 
         return 43200  # default
 
+    async def _resolve_telegram_id(self, spotify_id: str | None) -> int | None:
+        """Resolve Spotify user ID to Telegram ID."""
+        if not spotify_id:
+            return None
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT telegram_id FROM users WHERE spotify_id = $1", spotify_id
+            )
+            return row["telegram_id"] if row else None
+
+    async def _resolve_user(self, spotify_id: str | None) -> tuple[int | None, str | None]:
+        """Resolve Spotify user ID to (telegram_id, display_name)."""
+        if not spotify_id:
+            return None, None
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT telegram_id, telegram_username, telegram_name FROM users WHERE spotify_id = $1",
+                spotify_id,
+            )
+            if row:
+                return row["telegram_id"], display_name(row["telegram_username"], row["telegram_name"])
+        return None, None
+
+    async def _handle_duplicate(self, sp, pl, track, track_artist, real_duplicates,
+                                added_by, playlist_spotify_id, playlist_db_id):
+        """Handle a confirmed duplicate: auto-remove or ask for confirmation."""
+        telegram_id, added_by_name = await self._resolve_user(added_by)
+
+        # Split by match type and session status
+        has_exact_kept = any(
+            d["match"] in ("exact", "isrc") and d.get("session_status") in ("keep", "pending")
+            for d in real_duplicates
+        )
+        dropped_only = [d for d in real_duplicates if d.get("session_status") == "drop"]
+        fuzzy_only = [d for d in real_duplicates if d["match"].startswith("fuzzy_")]
+
+        if has_exact_kept:
+            # Hard duplicate: was kept in a session → auto-remove
+            try:
+                await sp.playlist_remove(playlist_spotify_id, [f"spotify:track:{track.id}"])
+                log.info(f"Auto-removed duplicate {track.name} from {pl['name']}")
+            except Exception as e:
+                log.error(f"Failed to auto-remove duplicate: {e}")
+
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
+                    playlist_db_id, track.id,
+                )
+            await self._notify(
+                telegram_id=telegram_id,
+                track_title=track.name,
+                artist=track_artist,
+                duplicates=real_duplicates,
+                playlist_name=pl["name"],
+                track_id=track.id,
+                added_by_name=added_by_name,
+            )
+        elif dropped_only and self._confirm:
+            await self._confirm(
+                telegram_id=telegram_id,
+                track_title=track.name,
+                artist=track_artist,
+                duplicates=dropped_only,
+                playlist_name=pl["name"],
+                track_id=track.id,
+                playlist_spotify_id=playlist_spotify_id,
+                added_by_name=added_by_name,
+            )
+        elif fuzzy_only and self._confirm:
+            await self._confirm(
+                telegram_id=telegram_id,
+                track_title=track.name,
+                artist=track_artist,
+                duplicates=fuzzy_only,
+                playlist_name=pl["name"],
+                track_id=track.id,
+                playlist_spotify_id=playlist_spotify_id,
+                added_by_name=added_by_name,
+            )
+
     async def _get_known_track_ids(self, playlist_db_id: int) -> set[str]:
         """Load all known track IDs for a playlist from DB in one query."""
         async with self._pool.acquire() as conn:
@@ -109,10 +190,16 @@ class DuplicateWatcher:
                     log.warning(f"Failed to generate facts for '{t['title']}': {e}")
 
     async def _check_playlists(self):
-        """Check active/upcoming playlists for new tracks and detect duplicates."""
+        """Check active/upcoming playlists for new tracks and detect duplicates.
+
+        Flow for each track in Spotify playlist:
+        1. Check duplicates FIRST (before saving to DB)
+        2. If duplicate → handle (remove/warn), don't save
+        3. If clean → save to DB, resolve genre, check drops/siblings
+        """
         async with self._pool.acquire() as conn:
             playlists = await conn.fetch(
-                "SELECT id, spotify_id, name FROM playlists WHERE status IN ('active', 'upcoming')"
+                "SELECT id, spotify_id, name, is_thematic FROM playlists WHERE status IN ('active', 'upcoming')"
             )
 
         sp = await get_spotify()
@@ -120,8 +207,9 @@ class DuplicateWatcher:
         for pl in playlists:
             playlist_spotify_id = pl["spotify_id"]
             playlist_db_id = pl["id"]
+            is_thematic = pl["is_thematic"]
 
-            # Load all known track IDs for this playlist in one query
+            # known_ids: only used to skip DB insert for already-saved tracks
             known_ids = await self._get_known_track_ids(playlist_db_id)
 
             # Fetch current tracks from Spotify (with pagination)
@@ -138,214 +226,116 @@ class DuplicateWatcher:
                 log.warning(f"Failed to fetch playlist {pl['name']}: {e}")
                 continue
 
+            # Track IDs already checked for duplicates this cycle (avoid re-checking)
+            checked_ids: set[str] = set()
+
             for item in all_items:
                 if item.track is None or item.track.id is None:
                     continue
                 track = item.track
+                added_by = item.added_by.id if item.added_by else None
+                track_artist = ", ".join(a.name for a in track.artists)
 
-                if track.id in known_ids:
-                    continue  # Already known
-
-                # Save to DB
+                # Get ISRC once per track
                 isrc = None
                 if hasattr(track, "external_ids") and track.external_ids:
                     isrc = getattr(track.external_ids, "isrc", None)
 
-                added_by = item.added_by.id if item.added_by else None
+                # ── Step 1: Check duplicates (skip thematic, skip already-checked) ──
+                if not is_thematic and track.id not in checked_ids:
+                    checked_ids.add(track.id)
 
-                track_artist = ", ".join(a.name for a in track.artists)
-                track_album = track.album.name if track.album else ""
+                    if not isrc:
+                        isrc = await get_track_isrc(track.id)
 
-                async with self._pool.acquire() as conn:
-                    try:
-                        # Upsert into tracks
-                        track_db_id = await conn.fetchval(
-                            """INSERT INTO tracks (spotify_track_id, title, artist, isrc,
-                                                    normalized_title, normalized_artist, normalized_base)
-                               VALUES ($1, $2, $3, $4, $5, $6, $7)
-                               ON CONFLICT (spotify_track_id) DO UPDATE
-                                  SET title = EXCLUDED.title, artist = EXCLUDED.artist,
-                                      normalized_title = EXCLUDED.normalized_title,
-                                      normalized_artist = EXCLUDED.normalized_artist,
-                                      normalized_base = EXCLUDED.normalized_base
-                               RETURNING id""",
-                            track.id, track.name, track_artist, isrc,
-                            normalize_title(track.name), normalize_artist(track_artist),
-                            base_title(track.name),
-                        )
-                        # Insert playlist_tracks link
-                        await conn.execute(
-                            """INSERT INTO playlist_tracks (playlist_id, track_id, spotify_track_id, added_by_spotify_id, added_at)
-                               VALUES ($1, $2, $3, $4, $5)
-                               ON CONFLICT (playlist_id, spotify_track_id) DO NOTHING""",
-                            playlist_db_id, track_db_id, track.id, added_by,
-                            item.added_at if hasattr(item, "added_at") else None,
-                        )
-                    except Exception as e:
-                        log.warning(f"Failed to save new track: {e}")
-
-                # Resolve genre from Spotify artist
-                try:
-                    await resolve_and_save_genre(self._pool, track)
-                except Exception as e:
-                    log.warning(f"Failed to resolve genre for '{track.name}': {e}")
-
-                # Check for duplicates in OTHER playlists
-                if not isrc:
-                    isrc = await get_track_isrc(track.id)
-
-                duplicates = await check_duplicate(
-                    self._pool, track.id, isrc,
-                    title=track.name, artist=track_artist,
-                )
-                # Filter: exact/isrc self-matches from same playlist (track finds itself),
-                # but keep fuzzy matches within same playlist (different track, same playlist)
-                duplicates = [
-                    d for d in duplicates
-                    if d.get("playlist_id") != pl["id"] or d["match"].startswith("fuzzy_")
-                ]
-
-                if duplicates:
-                    # Check if current playlist is thematic
-                    async with self._pool.acquire() as conn:
-                        is_thematic = await conn.fetchval(
-                            "SELECT is_thematic FROM playlists WHERE id = $1", playlist_db_id
-                        )
-
-                    if is_thematic:
-                        continue
-
-                    # Classify duplicates by session history
-                    duplicates = await classify_duplicates(self._pool, duplicates)
-
-                    # Filter out phantoms (track in DB but never played in session)
-                    real_duplicates = [d for d in duplicates if d.get("session_status") != "phantom"]
-                    if not real_duplicates:
-                        log.debug(f"Skipping phantom duplicate {track.name} in {pl['name']}")
-                        continue
-
-                    # Find who added it (Telegram ID + display name)
-                    telegram_id = None
-                    added_by_name = None
-                    if added_by:
-                        async with self._pool.acquire() as conn:
-                            row = await conn.fetchrow(
-                                "SELECT telegram_id, telegram_username, telegram_name FROM users WHERE spotify_id = $1",
-                                added_by,
-                            )
-                            if row:
-                                telegram_id = row["telegram_id"]
-                                added_by_name = display_name(row["telegram_username"], row["telegram_name"])
-
-                    # Split by match type and session status
-                    # 'pending' treated as 'keep' — session is active, track is real
-                    has_exact_kept = any(
-                        d["match"] in ("exact", "isrc") and d.get("session_status") in ("keep", "pending")
-                        for d in real_duplicates
+                    duplicates = await check_duplicate(
+                        self._pool, track.id, isrc,
+                        title=track.name, artist=track_artist,
                     )
-                    dropped_only = [d for d in real_duplicates if d.get("session_status") == "drop"]
-                    fuzzy_only = [d for d in real_duplicates if d["match"].startswith("fuzzy_")]
+                    # Filter self-matches from same playlist
+                    duplicates = [
+                        d for d in duplicates
+                        if d.get("playlist_id") != pl["id"] or d["match"].startswith("fuzzy_")
+                    ]
 
-                    if has_exact_kept:
-                        # Hard duplicate: was kept in a session → auto-remove
+                    if duplicates:
+                        # Classify by session history
+                        duplicates = await classify_duplicates(self._pool, duplicates)
+                        real_duplicates = [d for d in duplicates if d.get("session_status") != "phantom"]
+
+                        if real_duplicates:
+                            await self._handle_duplicate(
+                                sp, pl, track, track_artist, real_duplicates,
+                                added_by, playlist_spotify_id, playlist_db_id,
+                            )
+                            continue  # Don't save duplicate to DB
+
+                # ── Step 2: Save to DB (only if not duplicate and not yet known) ──
+                if track.id not in known_ids:
+
+                    async with self._pool.acquire() as conn:
                         try:
-                            await sp.playlist_remove(playlist_spotify_id, [f"spotify:track:{track.id}"])
-                            log.info(f"Auto-removed duplicate {track.name} from {pl['name']}")
-                        except Exception as e:
-                            log.error(f"Failed to auto-remove duplicate: {e}")
-
-                        async with self._pool.acquire() as conn:
+                            track_db_id = await conn.fetchval(
+                                """INSERT INTO tracks (spotify_track_id, title, artist, isrc,
+                                                        normalized_title, normalized_artist, normalized_base)
+                                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                                   ON CONFLICT (spotify_track_id) DO UPDATE
+                                      SET title = EXCLUDED.title, artist = EXCLUDED.artist,
+                                          normalized_title = EXCLUDED.normalized_title,
+                                          normalized_artist = EXCLUDED.normalized_artist,
+                                          normalized_base = EXCLUDED.normalized_base
+                                   RETURNING id""",
+                                track.id, track.name, track_artist, isrc,
+                                normalize_title(track.name), normalize_artist(track_artist),
+                                base_title(track.name),
+                            )
                             await conn.execute(
-                                "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
-                                playlist_db_id, track.id,
+                                """INSERT INTO playlist_tracks (playlist_id, track_id, spotify_track_id, added_by_spotify_id, added_at)
+                                   VALUES ($1, $2, $3, $4, $5)
+                                   ON CONFLICT (playlist_id, spotify_track_id) DO NOTHING""",
+                                playlist_db_id, track_db_id, track.id, added_by,
+                                item.added_at if hasattr(item, "added_at") else None,
                             )
-                        await self._notify(
-                            telegram_id=telegram_id,
-                            track_title=track.name,
-                            artist=track_artist,
-                            duplicates=real_duplicates,
-                            playlist_name=pl["name"],
-                            track_id=track.id,
-                            added_by_name=added_by_name,
-                        )
-                    elif dropped_only and self._confirm:
-                        # Soft duplicate: was dropped → ask if they want a second chance
-                        await self._confirm(
-                            telegram_id=telegram_id,
-                            track_title=track.name,
-                            artist=track_artist,
-                            duplicates=dropped_only,
-                            playlist_name=pl["name"],
-                            track_id=track.id,
-                            playlist_spotify_id=playlist_spotify_id,
-                            added_by_name=added_by_name,
-                        )
-                    elif fuzzy_only and self._confirm:
-                        # Fuzzy match — ask user to confirm
-                        await self._confirm(
-                            telegram_id=telegram_id,
-                            track_title=track.name,
-                            artist=track_artist,
-                            duplicates=fuzzy_only,
-                            playlist_name=pl["name"],
-                            track_id=track.id,
-                            playlist_spotify_id=playlist_spotify_id,
-                            added_by_name=added_by_name,
-                        )
+                        except Exception as e:
+                            log.warning(f"Failed to save new track: {e}")
 
-                # Check if track was previously dropped
-                if not duplicates:
-                    drops = await check_previously_dropped(self._pool, track.id)
-                    if drops and self._drop_warn:
-                        telegram_id = None
-                        if added_by:
-                            async with self._pool.acquire() as conn:
-                                row = await conn.fetchrow(
-                                    "SELECT telegram_id FROM users WHERE spotify_id = $1", added_by
-                                )
-                                if row:
-                                    telegram_id = row["telegram_id"]
-                        await self._drop_warn(
-                            telegram_id=telegram_id,
-                            track_title=track.name,
-                            artist=track_artist,
-                            drops=drops,
-                            playlist_name=pl["name"],
-                            track_id=track.id,
-                            playlist_spotify_id=playlist_spotify_id,
-                        )
+                    # Resolve genre
+                    try:
+                        await resolve_and_save_genre(self._pool, track)
+                    except Exception as e:
+                        log.warning(f"Failed to resolve genre for '{track.name}': {e}")
 
-                    # Sibling alert (modified version of an existing track) — only if no duplicates
-                    # Skip thematic playlists (intentional curation, not duplicate noise).
-                    if self._sibling_warn:
-                        async with self._pool.acquire() as conn:
-                            sib_is_thematic = await conn.fetchval(
-                                "SELECT is_thematic FROM playlists WHERE id = $1", playlist_db_id
-                            )
-                        if sib_is_thematic:
-                            continue
-                        siblings = await check_siblings(
-                            self._pool, track.id, track.name, track_artist,
-                            exclude_playlist_id=playlist_db_id,
-                        )
-                        if siblings:
-                            telegram_id = None
-                            if added_by:
-                                async with self._pool.acquire() as conn:
-                                    row = await conn.fetchrow(
-                                        "SELECT telegram_id FROM users WHERE spotify_id = $1", added_by
-                                    )
-                                    if row:
-                                        telegram_id = row["telegram_id"]
-                            await self._sibling_warn(
+                    # ── Step 3: Check drops/siblings (only for new non-duplicate tracks) ──
+                    if not is_thematic:
+                        drops = await check_previously_dropped(self._pool, track.id)
+                        if drops and self._drop_warn:
+                            telegram_id = await self._resolve_telegram_id(added_by)
+                            await self._drop_warn(
                                 telegram_id=telegram_id,
                                 track_title=track.name,
                                 artist=track_artist,
-                                siblings=siblings,
+                                drops=drops,
                                 playlist_name=pl["name"],
                                 track_id=track.id,
                                 playlist_spotify_id=playlist_spotify_id,
                             )
+
+                        if self._sibling_warn and not drops:
+                            siblings = await check_siblings(
+                                self._pool, track.id, track.name, track_artist,
+                                exclude_playlist_id=playlist_db_id,
+                            )
+                            if siblings:
+                                telegram_id = await self._resolve_telegram_id(added_by)
+                                await self._sibling_warn(
+                                    telegram_id=telegram_id,
+                                    track_title=track.name,
+                                    artist=track_artist,
+                                    siblings=siblings,
+                                    playlist_name=pl["name"],
+                                    track_id=track.id,
+                                    playlist_spotify_id=playlist_spotify_id,
+                                )
 
             # Cleanup: remove DB entries for tracks no longer in Spotify playlist
             spotify_ids = {item.track.id for item in all_items if item.track and item.track.id}
