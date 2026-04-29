@@ -226,6 +226,8 @@ async def classify_duplicates(pool: asyncpg.Pool, duplicates: list[dict]) -> lis
     if not duplicates:
         return duplicates
 
+    pl_status_cache: dict[int, str | None] = {}
+
     async with pool.acquire() as conn:
         for d in duplicates:
             playlist_id = d["playlist_id"]
@@ -262,7 +264,16 @@ async def classify_duplicates(pool: asyncpg.Pool, duplicates: list[dict]) -> lis
                 )
 
             if row is None:
-                d["session_status"] = "phantom"
+                # Check playlist status: 'listened' playlists predate the session
+                # system — all their tracks were played, so treat as 'keep', not phantom.
+                if playlist_id not in pl_status_cache:
+                    pl_status_cache[playlist_id] = await conn.fetchval(
+                        "SELECT status FROM playlists WHERE id = $1", playlist_id,
+                    )
+                if pl_status_cache[playlist_id] == "listened":
+                    d["session_status"] = "keep"
+                else:
+                    d["session_status"] = "phantom"
             else:
                 d["session_status"] = row["vote_result"]  # 'keep', 'drop', 'pending'
 
