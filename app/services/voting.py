@@ -101,10 +101,12 @@ async def skip_to_next():
         log.error(f"Failed to skip: {e}")
 
 
-async def create_session_track(pool: asyncpg.Pool, session_id: int, track_info) -> int:
-    """Insert a new track into session_tracks, return its id.
+async def create_session_track(pool: asyncpg.Pool, session_id: int, track_info) -> tuple[int, str | None]:
+    """Insert a new track into session_tracks.
 
     Also upserts into tracks table to ensure track_id FK is populated.
+    Returns (session_track_id, resolved_added_by_spotify_id) — the caller can use
+    the resolved added_by (which may come from a DB fallback) to render UI.
     """
     async with pool.acquire() as conn:
         # Upsert into tracks to get track_id
@@ -117,6 +119,32 @@ async def create_session_track(pool: asyncpg.Pool, session_id: int, track_info) 
             track_info.album, track_info.cover_url,
         )
 
+        # Fallback: monitor's _get_added_by misses tracks when Spotify reports no
+        # playback context, or when the track sits beyond the first paginated page
+        # of playlist_items. playlist_tracks already has the value from the
+        # duplicate watcher's poll loop, so we reuse it.
+        #
+        # Normalize empty string to None at the boundary — an empty spotify_id is
+        # never valid, so it should not be stored or block the fallback path.
+        added_by = track_info.added_by or None
+        if added_by is None:
+            # playlist_tracks has UNIQUE (playlist_id, spotify_track_id) so this
+            # returns at most one row; ORDER BY + LIMIT are defensive in case
+            # that constraint ever changes.
+            added_by = await conn.fetchval(
+                """SELECT pt.added_by_spotify_id
+                   FROM playlist_tracks pt
+                   JOIN sessions s ON s.playlist_id = pt.playlist_id
+                   WHERE s.id = $1 AND pt.spotify_track_id = $2
+                   ORDER BY pt.added_at DESC NULLS LAST
+                   LIMIT 1""",
+                session_id, track_info.track_id,
+            )
+            if added_by is not None:
+                log.info(
+                    f"added_by recovered from playlist_tracks for track={track_info.track_id} session={session_id}"
+                )
+
         row = await conn.fetchrow(
             """
             INSERT INTO session_tracks (session_id, track_id, spotify_track_id, title, artist, album, cover_url, added_by_spotify_id)
@@ -124,6 +152,6 @@ async def create_session_track(pool: asyncpg.Pool, session_id: int, track_info) 
             RETURNING id
             """,
             session_id, track_db_id, track_info.track_id, track_info.title, track_info.artist,
-            track_info.album, track_info.cover_url, track_info.added_by,
+            track_info.album, track_info.cover_url, added_by,
         )
-        return row["id"]
+        return row["id"], added_by

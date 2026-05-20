@@ -2,9 +2,12 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from app.services.voting import create_session_track
 
 
 # --- Threshold formula tests (no DB needed) ---
@@ -185,3 +188,150 @@ class TestThresholdWithParticipants:
 
         store.add_vote(session_track_id=1, telegram_id=100, vote="drop")
         assert store.get_drop_count(1) >= threshold
+
+
+# --- create_session_track: added_by fallback ---
+
+# Positional arg index of added_by_spotify_id in the INSERT INTO session_tracks call.
+# Order: session_id, track_id, spotify_track_id, title, artist, album, cover_url, added_by
+_INSERT_ADDED_BY_ARG = 7
+
+
+def _make_track_info(added_by: str | None):
+    return SimpleNamespace(
+        track_id="track_abc",
+        title="Song",
+        artist="Artist",
+        album="Album",
+        cover_url="https://cdn/cover.jpg",
+        added_by=added_by,
+    )
+
+
+def _make_pool(playlist_added_by: str | None):
+    """Build a fake pool whose connection answers the queries that
+    create_session_track issues. Returns (pool, calls) where calls
+    is a list of (method, query, args) tuples for assertions."""
+    calls: list = []
+
+    async def fetchval(query, *args):
+        calls.append(("fetchval", query, args))
+        q = query.lower()
+        if "insert into tracks" in q:
+            return 42  # track_db_id
+        if "from playlist_tracks" in q and "added_by_spotify_id" in q:
+            return playlist_added_by
+        return None
+
+    async def fetchrow(query, *args):
+        calls.append(("fetchrow", query, args))
+        return {"id": 777}
+
+    conn = MagicMock()
+    conn.fetchval = AsyncMock(side_effect=fetchval)
+    conn.fetchrow = AsyncMock(side_effect=fetchrow)
+
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=cm)
+
+    return pool, calls
+
+
+def _fallback_lookups(calls):
+    return [c for c in calls
+            if c[0] == "fetchval"
+            and "from playlist_tracks" in c[1].lower()
+            and "added_by_spotify_id" in c[1].lower()]
+
+
+def _insert_into_session_tracks(calls):
+    return [c for c in calls
+            if c[0] == "fetchrow" and "insert into session_tracks" in c[1].lower()]
+
+
+class TestCreateSessionTrackFallback:
+    """Regression: monitor sometimes returns added_by=None; we must fall back
+    to playlist_tracks.added_by_spotify_id so session_tracks doesn't lose the
+    attribution. Bug seen in production session 13 (TURDOM#98)."""
+
+    def test_fallback_used_when_monitor_returned_none(self):
+        pool, calls = _make_pool(playlist_added_by="user_from_pt")
+        info = _make_track_info(added_by=None)
+
+        session_track_id, resolved = asyncio.run(
+            create_session_track(pool, session_id=99, track_info=info)
+        )
+
+        # Fallback query should have run exactly once with (session_id, track_id)
+        lookups = _fallback_lookups(calls)
+        assert len(lookups) == 1
+        assert lookups[0][2] == (99, "track_abc")
+
+        # INSERT uses the fallback value
+        inserts = _insert_into_session_tracks(calls)
+        assert len(inserts) == 1
+        assert inserts[0][2][_INSERT_ADDED_BY_ARG] == "user_from_pt"
+
+        # Return tuple exposes the resolved value to the caller
+        assert session_track_id == 777
+        assert resolved == "user_from_pt"
+
+    def test_no_fallback_when_monitor_provided_added_by(self):
+        pool, calls = _make_pool(playlist_added_by="should_not_use_this")
+        info = _make_track_info(added_by="user_from_monitor")
+
+        _, resolved = asyncio.run(
+            create_session_track(pool, session_id=99, track_info=info)
+        )
+
+        assert _fallback_lookups(calls) == []
+        inserts = _insert_into_session_tracks(calls)
+        assert inserts[0][2][_INSERT_ADDED_BY_ARG] == "user_from_monitor"
+        assert resolved == "user_from_monitor"
+
+    def test_added_by_stays_null_when_both_sources_empty(self):
+        """If playlist_tracks also has no record (orphan track), we accept NULL."""
+        pool, calls = _make_pool(playlist_added_by=None)
+        info = _make_track_info(added_by=None)
+
+        _, resolved = asyncio.run(
+            create_session_track(pool, session_id=99, track_info=info)
+        )
+
+        inserts = _insert_into_session_tracks(calls)
+        assert inserts[0][2][_INSERT_ADDED_BY_ARG] is None
+        assert resolved is None
+
+    def test_empty_string_normalized_to_none_and_triggers_fallback(self):
+        """Empty spotify_id is never valid. Normalize to None and run fallback
+        so we don't end up with garbage '' in session_tracks."""
+        pool, calls = _make_pool(playlist_added_by="user_from_pt")
+        info = _make_track_info(added_by="")
+
+        _, resolved = asyncio.run(
+            create_session_track(pool, session_id=99, track_info=info)
+        )
+
+        # Fallback should have run
+        assert len(_fallback_lookups(calls)) == 1
+        # INSERT receives the fallback value, not ''
+        inserts = _insert_into_session_tracks(calls)
+        assert inserts[0][2][_INSERT_ADDED_BY_ARG] == "user_from_pt"
+        assert resolved == "user_from_pt"
+
+    def test_empty_string_with_no_fallback_becomes_none(self):
+        """When both the monitor and playlist_tracks have no value, store NULL
+        — never ''."""
+        pool, calls = _make_pool(playlist_added_by=None)
+        info = _make_track_info(added_by="")
+
+        _, resolved = asyncio.run(
+            create_session_track(pool, session_id=99, track_info=info)
+        )
+
+        inserts = _insert_into_session_tracks(calls)
+        assert inserts[0][2][_INSERT_ADDED_BY_ARG] is None
+        assert resolved is None

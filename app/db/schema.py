@@ -321,6 +321,19 @@ VERSIONED_MIGRATIONS: list[tuple[int, str, str]] = [
      "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS normalized_base TEXT"),
     (67, "idx: tracks.normalized_base",
      "CREATE INDEX IF NOT EXISTS idx_tracks_normalized_base ON tracks (normalized_base)"),
+
+    # --- Backfill session_tracks.added_by_spotify_id from playlist_tracks ---
+    # Monitor's _get_added_by missed some tracks (pagination bug pre-fix). Recover
+    # the attribution from playlist_tracks where the duplicate watcher has it.
+    (68, "backfill session_tracks.added_by_spotify_id from playlist_tracks", """
+        UPDATE session_tracks st
+        SET added_by_spotify_id = pt.added_by_spotify_id
+        FROM playlist_tracks pt
+        JOIN sessions s ON s.playlist_id = pt.playlist_id
+        WHERE st.session_id = s.id
+          AND st.spotify_track_id = pt.spotify_track_id
+          AND st.added_by_spotify_id IS NULL
+          AND pt.added_by_spotify_id IS NOT NULL"""),
 ]
 
 # Note: backfill of normalized_title/normalized_artist for existing tracks

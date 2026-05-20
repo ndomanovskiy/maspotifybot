@@ -137,12 +137,24 @@ class SpotifyMonitor:
         self._was_playing = is_playing
 
     async def _get_added_by(self, sp: tk.Spotify, track_id: str) -> str | None:
-        """Get who added the track to the playlist."""
+        """Get who added the track to the playlist. Paginates so tracks beyond
+        the first page are still resolved (TURDOM playlists routinely exceed 50)."""
         try:
-            items = await sp.playlist_items(self._playlist_id, limit=50)
-            for item in items.items:
-                if item.track and item.track.id == track_id:
-                    return item.added_by.id if item.added_by else None
+            offset = 0
+            while True:
+                page = await sp.playlist_items(self._playlist_id, limit=100, offset=offset)
+                items = page.items or []
+                for item in items:
+                    if item.track and item.track.id == track_id:
+                        return item.added_by.id if item.added_by else None
+                if not items:
+                    break
+                offset += len(items)
+                # Defensive: bail if Spotify omits total or returned fewer items
+                # than asked for (last page).
+                total = getattr(page, "total", None) or 0
+                if offset >= total or len(items) < 100:
+                    break
         except Exception as e:
             log.warning(f"Could not get added_by: {e}")
         return None

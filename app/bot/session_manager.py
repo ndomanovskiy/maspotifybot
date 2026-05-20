@@ -163,7 +163,9 @@ class SessionManager:
                     log.debug(f"Failed to notify {tid}: {e}")
             return
 
-        session_track_id = await create_session_track(_get_pool(), self.active_session_id, info)
+        session_track_id, resolved_added_by = await create_session_track(
+            _get_pool(), self.active_session_id, info
+        )
         self.current_session_track_id = session_track_id
 
         # Persist current track to DB for recovery
@@ -173,20 +175,21 @@ class SessionManager:
                 session_track_id, self.active_session_id,
             )
 
-        # Resolve added_by
+        # Resolve added_by — use the value resolved by create_session_track,
+        # which may have fallen back to playlist_tracks if the monitor missed it.
         added_by_name = None
-        if info.added_by:
+        if resolved_added_by:
             async with _get_pool().acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT telegram_username, telegram_name FROM users WHERE spotify_id = $1", info.added_by
+                    "SELECT telegram_username, telegram_name FROM users WHERE spotify_id = $1", resolved_added_by
                 )
                 if row:
                     added_by_name = display_name(row["telegram_username"], row["telegram_name"])
 
         if added_by_name:
             added_by_text = f"\n👤 {added_by_name}"
-        elif info.added_by:
-            added_by_text = f"\n👤 <code>{info.added_by}</code>"
+        elif resolved_added_by:
+            added_by_text = f"\n👤 <code>{resolved_added_by}</code>"
         else:
             added_by_text = ""
 
