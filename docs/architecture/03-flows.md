@@ -240,6 +240,9 @@ sequenceDiagram
         PL-->>AC: {name, number, url}
         AC->>DB: INSERT action_log
         AC-->>Bot: "Created! Collaborative access automatic"
+        Bot->>Admin: Picker with a tick per registered user
+        Admin->>Bot: Tick people, press Send
+        Bot->>Admin: Report who received it
     end
 
     Note over Admin,Spotify: Import Playlist

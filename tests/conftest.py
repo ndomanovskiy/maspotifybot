@@ -80,9 +80,9 @@ class FakeStore:
     # --- helpers ---
 
     def add_playlist(self, *, id: int, spotify_id: str, name: str, status: str = "upcoming",
-                     is_thematic: bool = False, number: int | None = None) -> dict:
+                     is_thematic: bool = False, number: int | None = None, url: str | None = None) -> dict:
         rec = {"id": id, "spotify_id": spotify_id, "name": name, "status": status,
-               "is_thematic": is_thematic, "number": number}
+               "is_thematic": is_thematic, "number": number, "url": url}
         self.playlists.append(rec)
         return rec
 
@@ -174,6 +174,23 @@ class FakeStore:
         if "from playlists" in q and "status in" in q:
             return [FakeRecord(p) for p in self.playlists if p["status"] in ("active", "upcoming")]
 
+        if "t.isrc = $1" in q:
+            isrc, exclude_id = args[0], args[1]
+            rows = []
+            for pt in self.playlist_tracks:
+                track = next(t for t in self.tracks if t["id"] == pt["track_id"])
+                if track["isrc"] == isrc and track["spotify_track_id"] != exclude_id:
+                    playlist = next(p for p in self.playlists if p["id"] == pt["playlist_id"])
+                    rows.append(FakeRecord({
+                        "spotify_track_id": track["spotify_track_id"], "title": track["title"],
+                        "artist": track["artist"], "playlist_id": playlist["id"],
+                        "playlist_name": playlist["name"], "playlist_url": playlist.get("url"),
+                    }))
+            return rows
+
+        if "from users" in q and "telegram_id <> $1" in q:
+            return [FakeRecord(u) for u in self.users if u["telegram_id"] != args[0]]
+
         if "from playlist_tracks" in q and "playlist_id = $1" in q and "ai_facts" not in q:
             pid = args[0]
             return [FakeRecord({"spotify_track_id": pt["spotify_track_id"]})
@@ -256,6 +273,8 @@ class FakeStore:
             if existing:
                 existing["title"] = title
                 existing["artist"] = artist
+                if "coalesce(excluded.isrc" in q and isrc:
+                    existing["isrc"] = isrc
                 return existing["id"]
 
             track_rec = {
@@ -298,6 +317,25 @@ class FakeStore:
                 if u["spotify_id"] == sid:
                     return FakeRecord(u)
             return None
+
+        if "from playlists" in q and "number = $1" in q:
+            for p in self.playlists:
+                if p["number"] == args[0]:
+                    return FakeRecord(p)
+            return None
+
+        if "insert into tracks" in q and "returning id" in q:
+            return FakeRecord({"id": self.handle_fetchval(query, args)})
+
+        if "insert into playlists" in q and "returning id" in q:
+            spotify_id, name, number = args[0], args[1], args[2]
+            for p in self.playlists:
+                if p["spotify_id"] == spotify_id:
+                    p["name"], p["number"] = name, number
+                    return FakeRecord({"id": p["id"]})
+            rec = self.add_playlist(id=len(self.playlists) + 1, spotify_id=spotify_id, name=name,
+                                    status="listened", number=number)
+            return FakeRecord({"id": rec["id"]})
 
         return None
 
@@ -433,17 +471,12 @@ class FakeAlbum:
 
 
 @dataclass
-class FakeExternalIds:
-    isrc: str | None = None
-
-
-@dataclass
 class FakeTrack:
     id: str
     name: str
     artists: list[FakeArtist] = field(default_factory=list)
     album: FakeAlbum = field(default_factory=lambda: FakeAlbum(name=""))
-    external_ids: FakeExternalIds | None = None
+    external_ids: dict | None = None  # tekore returns a plain dict here
     duration_ms: int = 200000
 
 
@@ -488,7 +521,7 @@ def make_track(track_id: str, name: str = "Track", artist: str = "Artist",
         name=name,
         artists=[FakeArtist(name=artist)],
         album=FakeAlbum(name=album),
-        external_ids=FakeExternalIds(isrc=isrc) if isrc else None,
+        external_ids={"isrc": isrc} if isrc else None,
     )
 
 

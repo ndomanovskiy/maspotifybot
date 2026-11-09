@@ -2,6 +2,7 @@
 recap carousel, playlist creation, join approval."""
 
 import asyncio
+import html
 import logging
 
 from aiogram import Router, F
@@ -18,6 +19,7 @@ from app.bot.core import (
     get_pool, is_admin, is_registered,
     require_admin_callback, send, safe_int, _NO_PREVIEW,
 )
+from app.bot.playlist_notify import handle_callback as handle_playlist_notify, offer_notification
 from app.bot.session_manager import session
 
 log = logging.getLogger(__name__)
@@ -392,18 +394,20 @@ async def on_create_playlist(callback: CallbackQuery):
             )
 
         text = (
-            f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}"
+            f"✅ <b>Создан: {html.escape(result['name'])}</b>\n\n{result['url']}"
         )
         await callback.message.edit_text(text, parse_mode="HTML")
-
-        for tid in session.participants:
-            if tid != callback.from_user.id:
-                try:
-                    await send(tid, f"🆕 <b>Новый плейлист:</b> {result['name']}\n\nДобавляйте треки!\n{result['url']}")
-                except Exception as e:
-                    log.debug(f"Failed to notify {tid}: {e}")
+        await offer_notification(result)
     except Exception as e:
         await callback.message.edit_text(f"❌ Ошибка: {e}")
+
+
+# ── New playlist notification picker ────────────────────────────
+
+@router.callback_query(F.data.startswith("pln:"))
+@require_admin_callback
+async def on_playlist_notify(callback: CallbackQuery):
+    await handle_playlist_notify(callback)
 
 
 # ── Theme input ─────────────────────────────────────────────────

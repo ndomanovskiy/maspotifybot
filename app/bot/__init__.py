@@ -12,6 +12,7 @@ from app.services.duplicate_watcher import DuplicateWatcher
 from app.services.track_formatter import format_track
 
 from app.bot.core import bot, dp, set_pool, is_admin, send, reply
+from app.bot.playlist_notify import offer_notification
 from app.bot.session_manager import session
 from app.bot.commands.user import router as user_router
 from app.bot.commands.admin import router as admin_router, set_duplicate_notify, set_fuzzy_confirm, init_health
@@ -51,20 +52,11 @@ async def on_theme_input(message: Message):
             )
 
         text = (
-            f"✅ <b>Создан: {result['name']}</b>\n\n{result['url']}\n\n"
+            f"✅ <b>Создан: {html.escape(result['name'])}</b>\n\n{result['url']}\n\n"
             f"📎 Совместный доступ включён автоматически."
         )
         await reply(message, text)
-
-        for tid in session.participants:
-            if tid != message.from_user.id:
-                try:
-                    await send(
-                        tid,
-                        f"🆕 <b>Новый плейлист:</b> {result['name']}\n\nДобавляйте треки!\n{result['url']}",
-                    )
-                except Exception as e:
-                    log.debug(f"Failed to notify {tid}: {e}")
+        await offer_notification(result)
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 

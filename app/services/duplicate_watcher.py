@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import asyncpg
 
 from app.spotify.auth import get_spotify
-from app.services.playlists import check_duplicate, classify_duplicates, check_siblings, get_track_isrc
+from app.services.playlists import check_duplicate, classify_duplicates, check_siblings, extract_isrc, get_track_isrc
 from app.services.ai import generate_track_facts
 from app.services.genre_resolver import resolve_and_save_genre
 from app.services.genre_distributor import check_previously_dropped
@@ -250,9 +250,7 @@ class DuplicateWatcher:
                 track_artist = ", ".join(a.name for a in track.artists)
 
                 # Get ISRC once per track
-                isrc = None
-                if hasattr(track, "external_ids") and track.external_ids:
-                    isrc = getattr(track.external_ids, "isrc", None)
+                isrc = extract_isrc(track)
 
                 # ── Step 1: Check duplicates (skip thematic, skip already-checked) ──
                 if not is_thematic and track.id not in checked_ids:
@@ -294,6 +292,7 @@ class DuplicateWatcher:
                                    VALUES ($1, $2, $3, $4, $5, $6, $7)
                                    ON CONFLICT (spotify_track_id) DO UPDATE
                                       SET title = EXCLUDED.title, artist = EXCLUDED.artist,
+                                          isrc = COALESCE(EXCLUDED.isrc, tracks.isrc),
                                           normalized_title = EXCLUDED.normalized_title,
                                           normalized_artist = EXCLUDED.normalized_artist,
                                           normalized_base = EXCLUDED.normalized_base

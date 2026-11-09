@@ -638,19 +638,6 @@ async def cmd_create_next(pool: asyncpg.Pool, theme: str | None = None, triggere
             result={"name": closed["name"], "reason": "create_next"},
         )
 
-    # Get participants from last ended session to notify them
-    async with pool.acquire() as conn:
-        last_session = await conn.fetchrow(
-            "SELECT id FROM sessions WHERE status = 'ended' ORDER BY ended_at DESC LIMIT 1"
-        )
-        participant_ids = []
-        if last_session:
-            rows = await conn.fetch(
-                "SELECT telegram_id FROM session_participants WHERE session_id = $1 AND active = true",
-                last_session["id"],
-            )
-            participant_ids = [r["telegram_id"] for r in rows]
-
     await log_action(
         pool, "create_next",
         turdom_number=result["number"],
@@ -661,12 +648,11 @@ async def cmd_create_next(pool: asyncpg.Pool, theme: str | None = None, triggere
     return {
         "status": "ok",
         "message": (
-            f"✅ Создан: {result['name']}\n\n"
+            f"✅ Создан: {html.escape(result['name'])}\n\n"
             f"{result['url']}\n\n"
             f"📎 Ссылка для участников — совместный доступ включён автоматически."
         ),
         "playlist": result,
-        "notify_ids": participant_ids,
     }
 
 

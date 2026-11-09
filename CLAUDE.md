@@ -4,9 +4,9 @@ Collaborative music listening Telegram bot for TURDOM community. Users add track
 
 ## Stack
 
-- **Python 3.10+**, aiogram v3 (Telegram), tekore (Spotify async), asyncpg (PostgreSQL)
-- **AI:** OpenAI GPT-4o-mini (track facts, session recap, easter egg analysis)
-- **Deploy:** Docker, GitHub Actions CI/CD, Selectel VPS
+- **Python 3.12**, aiogram v3 (Telegram), tekore (Spotify async), asyncpg (PostgreSQL)
+- **AI:** Claude Sonnet with OpenAI GPT-4o fallback (track facts, session recap, easter egg analysis), GPT-4o-mini (genres)
+- **Deploy:** local Docker on the owner's PC since 2026-09-30 (`docker compose up -d --build bot`). Spotify traffic exits through the host's Clash Verge.
 
 ## Project Structure
 
@@ -19,6 +19,7 @@ app/
 │   ├── core.py             — Shared: bot, dp, pool, helpers, decorators
 │   ├── session_manager.py  — SessionManager singleton (all session state)
 │   ├── callbacks.py        — Callback query handlers
+│   ├── playlist_notify.py  — Admin picker of who to notify about a new playlist
 │   └── commands/
 │       ├── user.py         — User commands (/start, /join, /stats, etc.)
 │       └── admin.py        — Admin commands (/session, /distribute, etc.)
@@ -62,13 +63,14 @@ Never use bare `except Exception: pass`. Always log: `except Exception as e: log
 
 | File | Lines | What |
 |------|-------|------|
-| `app/bot/core.py` | 147 | Shared infrastructure, helpers, decorators |
-| `app/bot/session_manager.py` | 535 | SessionManager — all session lifecycle |
-| `app/bot/commands/user.py` | 700 | User-facing commands |
-| `app/bot/commands/admin.py` | 575 | Admin commands |
-| `app/bot/callbacks.py` | 420 | All callback handlers |
-| `app/services/admin_commands.py` | 666 | Distribute, recap, close, create_next |
-| `app/db/schema.py` | 250 | Schema + 32 versioned migrations |
+| `app/bot/core.py` | 154 | Shared infrastructure, helpers, decorators |
+| `app/bot/session_manager.py` | 696 | SessionManager — all session lifecycle |
+| `app/bot/commands/user.py` | 797 | User-facing commands |
+| `app/bot/commands/admin.py` | 740 | Admin commands |
+| `app/bot/callbacks.py` | 568 | All callback handlers |
+| `app/bot/playlist_notify.py` | 193 | New playlist notification picker |
+| `app/services/admin_commands.py` | 724 | Distribute, recap, close, create_next |
+| `app/db/schema.py` | 376 | Schema + 69 versioned migrations |
 
 ## Running
 
@@ -76,10 +78,11 @@ Never use bare `except Exception: pass`. Always log: `except Exception as e: log
 # Tests
 python -m pytest tests/ -q
 
-# Local
-docker-compose up -d
-python -m app.main
+# Run bot and database
+docker compose up -d --build bot
 ```
+
+The Spotify refresh token lives 6 months and cannot be extended. On `invalid_grant`, run `/auth` in the bot.
 
 ## Architecture docs
 See `docs/architecture/` for detailed diagrams and flows.

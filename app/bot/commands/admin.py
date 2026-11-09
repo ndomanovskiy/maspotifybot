@@ -13,7 +13,7 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from app.config import settings
 from app.spotify.auth import start_oauth, exchange_code, run_oauth_callback_server, get_spotify
 from app.services.playlists import (
-    import_playlist, import_all_turdom, check_duplicate, classify_duplicates,
+    import_playlist, import_all_turdom, check_duplicate, classify_duplicates, extract_isrc,
     get_track_isrc, create_next_playlist, reschedule_playlist,
 )
 from app.services.genre_resolver import backfill_genres
@@ -27,6 +27,7 @@ from app.bot.core import (
     get_pool, is_admin, require_admin, extract_spotify_id, parse_turdom_number,
     reply, send, reply_photo, display_name,
 )
+from app.bot.playlist_notify import offer_notification
 from app.bot.session_manager import session
 
 log = logging.getLogger(__name__)
@@ -306,9 +307,7 @@ async def cmd_scan(message: Message):
                 added_by_spotify = item.added_by.id if item.added_by else None
                 added_by_name = user_name_cache.get(added_by_spotify) if added_by_spotify else None
 
-                isrc = None
-                if hasattr(track, "external_ids") and track.external_ids:
-                    isrc = getattr(track.external_ids, "isrc", None)
+                isrc = extract_isrc(track)
                 if not isrc:
                     isrc = await get_track_isrc(track.id)
 
@@ -501,14 +500,7 @@ async def cmd_playlist(message: Message):
             return
 
         await reply(message, result["message"])
-
-        for tid in result.get("notify_ids", []):
-            if tid != message.from_user.id:
-                try:
-                    pl = result["playlist"]
-                    await send(tid, f"🆕 <b>Новый плейлист:</b> {pl['name']}\n\nДобавляйте треки!\n{pl['url']}")
-                except Exception as e:
-                    log.debug(f"Failed to notify {tid}: {e}")
+        await offer_notification(result["playlist"])
 
     elif sub == "close":
         if not rest or not rest.isdigit():

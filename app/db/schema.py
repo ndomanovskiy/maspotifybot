@@ -334,6 +334,8 @@ VERSIONED_MIGRATIONS: list[tuple[int, str, str]] = [
           AND st.spotify_track_id = pt.spotify_track_id
           AND st.added_by_spotify_id IS NULL
           AND pt.added_by_spotify_id IS NOT NULL"""),
+    (69, "idx: tracks.isrc",
+     "CREATE INDEX IF NOT EXISTS idx_tracks_isrc ON tracks (isrc)"),
 ]
 
 # Note: backfill of normalized_title/normalized_artist for existing tracks

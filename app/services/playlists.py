@@ -47,10 +47,7 @@ async def import_playlist(pool: asyncpg.Pool, playlist_spotify_id: str) -> dict:
                     continue
                 track = item.track
 
-                # Get ISRC
-                isrc = None
-                if hasattr(track, "external_ids") and track.external_ids:
-                    isrc = getattr(track.external_ids, "isrc", None)
+                isrc = extract_isrc(track)
 
                 added_by = item.added_by.id if item.added_by else None
                 added_at = item.added_at if hasattr(item, "added_at") else None
@@ -172,6 +169,10 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
                 isrc, spotify_track_id,
             )
             for r in rows:
+                # Different versions (remix, sped up) are reported by check_siblings, not removed as duplicates
+                if title and (has_version_marker(title) or has_version_marker(r["title"])) \
+                        and normalize_title(title) != normalize_title(r["title"]):
+                    continue
                 duplicates.append({"match": "isrc", "spotify_track_id": r["spotify_track_id"],
                                    "title": r["title"], "artist": r["artist"],
                                    "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
@@ -353,15 +354,20 @@ async def check_siblings(pool: asyncpg.Pool, spotify_track_id: str,
     return result
 
 
+def extract_isrc(track: object) -> str | None:
+    """Return the track's ISRC. tekore exposes external_ids as a plain dict."""
+    external_ids = getattr(track, "external_ids", None)
+    return external_ids.get("isrc") if external_ids else None
+
+
 async def get_track_isrc(spotify_track_id: str) -> str | None:
     """Fetch ISRC for a track from Spotify."""
     try:
         sp = await get_spotify()
         track = await sp.track(spotify_track_id)
-        if track.external_ids:
-            return getattr(track.external_ids, "isrc", None)
-    except Exception:
-        pass
+        return extract_isrc(track)
+    except Exception as e:
+        log.debug(f"Failed to fetch ISRC for {spotify_track_id}: {e}")
     return None
 
 
