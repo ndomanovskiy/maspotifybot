@@ -336,6 +336,14 @@ VERSIONED_MIGRATIONS: list[tuple[int, str, str]] = [
           AND pt.added_by_spotify_id IS NOT NULL"""),
     (69, "idx: tracks.isrc",
      "CREATE INDEX IF NOT EXISTS idx_tracks_isrc ON tracks (isrc)"),
+    (70, "kept_duplicates: suspected duplicates kept in one playlist", """
+        CREATE TABLE IF NOT EXISTS kept_duplicates (
+            playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+            spotify_track_id TEXT NOT NULL,
+            kept_by BIGINT,
+            kept_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (playlist_id, spotify_track_id)
+        )"""),
 ]
 
 # Note: backfill of normalized_title/normalized_artist for existing tracks

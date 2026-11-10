@@ -44,7 +44,7 @@
 |---------|-------------|
 | `/import <playlist_url>` | Import single playlist to DB |
 | `/import_all` | Import all TURDOM playlists from Spotify account |
-| `/scan` | Force duplicate scan on active/upcoming playlists |
+| `/scan` | Force duplicate scan on active/upcoming playlists; skips tracks kept with «Оставить» in that playlist |
 | `/reschedule <DD/MM/YYYY>` | Change upcoming playlist date |
 | `/backfill_genres` | Backfill missing genres for all tracks |
 | `/preview <track>` | Preview track card rendering |
@@ -74,6 +74,9 @@
 | `recap_page:<N>:<page>` | Recap carousel | Navigate recap pages |
 | `noop` | Recap page counter | No action |
 | `history:<offset>` | History pagination | Navigate pages |
+| `confirm_dup:<playlist_spotify_id>:<track_id>` | Suspected duplicate / dropped before | Remove the track from that playlist and forget any «Оставить» for it |
+| `keep_dup:<playlist_spotify_id>:<track_id>` | Suspected duplicate / dropped before | Keep the track; remembered for that playlist while it is open (`kept_duplicates`). Old `keep_dup:<track_id>` buttons answer but remember nothing |
+| `pln:t:<N>:<telegram_id>`, `pln:all:<N>`, `pln:send:<N>`, `pln:skip:<N>` | New playlist picker (admin) | Tick recipients, tick all, send, skip |
 
 ## Post-Session Flow (Typical Admin Sequence)
 

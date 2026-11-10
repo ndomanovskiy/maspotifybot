@@ -16,9 +16,18 @@ from app.bot.playlist_notify import offer_notification
 from app.bot.session_manager import session
 from app.bot.commands.user import router as user_router
 from app.bot.commands.admin import router as admin_router, set_duplicate_notify, set_fuzzy_confirm, init_health
-from app.bot.callbacks import router as callbacks_router
+from app.bot.callbacks import router as callbacks_router, keep_duplicate_button, remove_duplicate_button
 
 log = logging.getLogger(__name__)
+
+# How a duplicate notification names each kind of match from check_duplicate
+MATCH_LABELS = {
+    "fuzzy_exact": "🔍 нормализованное совпадение",
+    "fuzzy_contains": "🔍 слова совпадают",
+    "fuzzy_levenshtein": "🔍 похожее название",
+    "exact": "🎯 точное",
+    "isrc": "🔗 ISRC",
+}
 
 # Register routers
 dp.include_router(user_router)
@@ -111,7 +120,7 @@ async def setup_bot(pool):
     async def on_duplicate_found(telegram_id, track_title, artist, duplicates, playlist_name, track_id=None, added_by_name=None):
         dup_links = []
         for d in duplicates:
-            match_type = "🎯 точное" if d["match"] == "exact" else "🔗 ISRC"
+            match_type = MATCH_LABELS.get(d["match"], "🔍 похож")
             dup_links.append(f"  {match_type} — <a href=\"{d['url']}\">{d['playlist']}</a>")
         dup_text = "\n".join(dup_links)
 
@@ -137,18 +146,11 @@ async def setup_bot(pool):
 
     async def on_fuzzy_duplicate_confirm(telegram_id, track_title, artist, duplicates, playlist_name, track_id, playlist_spotify_id, added_by_name=None):
         """Ask user to confirm fuzzy duplicate — show buttons."""
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        from aiogram.types import InlineKeyboardMarkup
 
-        match_labels = {
-            "fuzzy_exact": "🔍 нормализованное совпадение",
-            "fuzzy_contains": "🔍 слова совпадают",
-            "fuzzy_levenshtein": "🔍 похожее название",
-            "exact": "🎯 точное",
-            "isrc": "🔗 ISRC",
-        }
         dup_links = []
         for d in duplicates:
-            label = match_labels.get(d["match"], "🔍 похож")
+            label = MATCH_LABELS.get(d["match"], "🔍 похож")
             if d.get("session_status") == "drop":
                 label = "❌ дропнут ранее"
             dup_links.append(f"  {label} — <a href=\"{d['url']}\">{d['playlist']}</a>\n  {d['title']} — {d['artist']}")
@@ -172,10 +174,9 @@ async def setup_bot(pool):
             f"{footer}"
         )
 
-        # Encode callback data: confirm_dup:<playlist_spotify_id>:<track_id>
         kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"confirm_dup:{playlist_spotify_id}:{track_id}"),
-            InlineKeyboardButton(text="✅ Оставить", callback_data=f"keep_dup:{track_id}"),
+            remove_duplicate_button(playlist_spotify_id, track_id, "🗑 Удалить"),
+            keep_duplicate_button(playlist_spotify_id, track_id),
         ]])
 
         target = telegram_id or settings.telegram_admin_id
@@ -186,7 +187,7 @@ async def setup_bot(pool):
 
     async def on_drop_warn(telegram_id, track_title, artist, drops, playlist_name, track_id, playlist_spotify_id):
         """Warn that a track was previously dropped."""
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        from aiogram.types import InlineKeyboardMarkup
 
         track_fmt = format_track(track_title, artist, track_id)
         drop_lines = [f"  ❌ {d['playlist']} ({d['date']}) — добавил {d['added_by']}" for d in drops]
@@ -200,8 +201,8 @@ async def setup_bot(pool):
         )
 
         kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Оставить", callback_data=f"keep_dup:{track_id}"),
-            InlineKeyboardButton(text="🗑 Убрать", callback_data=f"confirm_dup:{playlist_spotify_id}:{track_id}"),
+            keep_duplicate_button(playlist_spotify_id, track_id),
+            remove_duplicate_button(playlist_spotify_id, track_id, "🗑 Убрать"),
         ]])
 
         target = telegram_id or settings.telegram_admin_id

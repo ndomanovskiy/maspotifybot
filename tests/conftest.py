@@ -2,9 +2,23 @@
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiogram.types import Chat, Message, MessageEntity
+
+
+def telegram_message(text: str, bold_word: str) -> Message:
+    """A message as Telegram returns it: plain text plus a bold entity over one word."""
+    def utf16_len(s: str) -> int:  # Telegram counts entity offsets in UTF-16 code units
+        return len(s.encode("utf-16-le")) // 2
+
+    start = text.index(bold_word)
+    return Message(
+        message_id=1, date=datetime(2026, 11, 10), chat=Chat(id=1, type="private"), text=text,
+        entities=[MessageEntity(type="bold", offset=utf16_len(text[:start]), length=utf16_len(bold_word))],
+    )
 
 
 # --- Fake asyncpg primitives ---
@@ -68,12 +82,14 @@ class FakeStore:
       tracks: list[dict] (auto-increment id) — canonical track data
       playlist_tracks: list[dict] (auto-increment id) — playlist↔track links
       users: list[dict]
+      kept_duplicates: list[dict] — suspected duplicates kept in one playlist
     """
 
     playlists: list[dict] = field(default_factory=list)
     tracks: list[dict] = field(default_factory=list)
     playlist_tracks: list[dict] = field(default_factory=list)
     users: list[dict] = field(default_factory=list)
+    kept_duplicates: list[dict] = field(default_factory=list)
     _next_track_id: int = 1
     _next_pt_id: int = 1
 
@@ -174,6 +190,44 @@ class FakeStore:
         if "from playlists" in q and "status in" in q:
             return [FakeRecord(p) for p in self.playlists if p["status"] in ("active", "upcoming")]
 
+        if "from kept_duplicates" in q:
+            return [FakeRecord(k) for k in self.kept_duplicates if k["playlist_id"] == args[0]]
+
+        # check_duplicate step 1: every copy of this exact track, with its playlist status and kept mark
+        if "left join kept_duplicates" in q and "t.spotify_track_id = $1" in q:
+            rows = []
+            for pt in self.playlist_tracks:
+                if pt["spotify_track_id"] != args[0]:
+                    continue
+                track = next(t for t in self.tracks if t["id"] == pt["track_id"])
+                playlist = next(p for p in self.playlists if p["id"] == pt["playlist_id"])
+                kept_here = any(k["playlist_id"] == playlist["id"] and k["spotify_track_id"] == args[0]
+                                for k in self.kept_duplicates)
+                rows.append(FakeRecord({
+                    "spotify_track_id": track["spotify_track_id"], "title": track["title"],
+                    "artist": track["artist"], "playlist_id": playlist["id"],
+                    "playlist_name": playlist["name"], "playlist_url": playlist.get("url"),
+                    "playlist_status": playlist["status"], "kept_here": kept_here,
+                }))
+            return rows
+
+        # check_duplicate step 3: other tracks by the same normalized artist
+        if "t.normalized_artist = $1" in q:
+            norm_artist, exclude_id = args[0], args[1]
+            rows = []
+            for pt in self.playlist_tracks:
+                track = next(t for t in self.tracks if t["id"] == pt["track_id"])
+                track_artist = track["normalized_artist"]  # NULL never matches, as in SQL
+                if track_artist == norm_artist and track["spotify_track_id"] != exclude_id:
+                    playlist = next(p for p in self.playlists if p["id"] == pt["playlist_id"])
+                    rows.append(FakeRecord({
+                        "spotify_track_id": track["spotify_track_id"], "title": track["title"],
+                        "artist": track["artist"], "normalized_title": track["normalized_title"],
+                        "normalized_artist": track_artist, "playlist_id": playlist["id"],
+                        "playlist_name": playlist["name"], "playlist_url": playlist.get("url"),
+                    }))
+            return rows
+
         if "t.isrc = $1" in q:
             isrc, exclude_id = args[0], args[1]
             rows = []
@@ -181,10 +235,14 @@ class FakeStore:
                 track = next(t for t in self.tracks if t["id"] == pt["track_id"])
                 if track["isrc"] == isrc and track["spotify_track_id"] != exclude_id:
                     playlist = next(p for p in self.playlists if p["id"] == pt["playlist_id"])
+                    kept_here = any(k["playlist_id"] == playlist["id"]
+                                    and k["spotify_track_id"] == track["spotify_track_id"]
+                                    for k in self.kept_duplicates)
                     rows.append(FakeRecord({
                         "spotify_track_id": track["spotify_track_id"], "title": track["title"],
                         "artist": track["artist"], "playlist_id": playlist["id"],
                         "playlist_name": playlist["name"], "playlist_url": playlist.get("url"),
+                        "playlist_status": playlist["status"], "kept_here": kept_here,
                     }))
             return rows
 
@@ -238,6 +296,9 @@ class FakeStore:
 
     def handle_fetchval(self, query: str, args: tuple):
         q = query.strip().lower()
+
+        if "select id from playlists where spotify_id = $1" in q:
+            return next((p["id"] for p in self.playlists if p["spotify_id"] == args[0]), None)
 
         if "select exists" in q and "users" in q:
             tid = args[0]
@@ -324,6 +385,9 @@ class FakeStore:
                     return FakeRecord(p)
             return None
 
+        if "from playlists" in q and "where spotify_id = $1" in q:
+            return next((FakeRecord(p) for p in self.playlists if p["spotify_id"] == args[0]), None)
+
         if "insert into tracks" in q and "returning id" in q:
             return FakeRecord({"id": self.handle_fetchval(query, args)})
 
@@ -341,6 +405,23 @@ class FakeStore:
 
     def handle_execute(self, query: str, args: tuple):
         q = query.strip().lower()
+
+        if "delete from kept_duplicates" in q:
+            gone = args[1] if isinstance(args[1], list) else [args[1]]
+            self.kept_duplicates = [
+                k for k in self.kept_duplicates
+                if not (k["playlist_id"] == args[0] and k["spotify_track_id"] in gone)
+            ]
+            return
+
+        if "insert into kept_duplicates" in q:
+            playlist_id, track_id, kept_by = args
+            if not any(k["playlist_id"] == playlist_id and k["spotify_track_id"] == track_id
+                       for k in self.kept_duplicates):
+                self.kept_duplicates.append(
+                    {"playlist_id": playlist_id, "spotify_track_id": track_id, "kept_by": kept_by}
+                )
+            return
 
         if "insert into tracks" in q and "insert into playlist_tracks" not in q:
             # Handled by fetchval (RETURNING id), but support execute too

@@ -9,6 +9,10 @@ from app.services.normalize import normalize_title, normalize_artist, is_fuzzy_m
 
 log = logging.getLogger(__name__)
 
+# Playlists still collecting tracks. Keep in sync with the `status IN ('active', 'upcoming')`
+# queries of the duplicate watcher and /scan.
+OPEN_PLAYLIST_STATUSES = ("active", "upcoming")
+
 
 async def import_playlist(pool: asyncpg.Pool, playlist_spotify_id: str) -> dict:
     """Import a single playlist and all its tracks into the database."""
@@ -129,41 +133,61 @@ async def import_all_turdom(pool: asyncpg.Pool) -> list[dict]:
     return results
 
 
+def _duplicate_match(kind: str, row: asyncpg.Record) -> dict:
+    return {"match": kind, "spotify_track_id": row["spotify_track_id"],
+            "title": row["title"], "artist": row["artist"],
+            "playlist": row["playlist_name"], "playlist_id": row["playlist_id"],
+            "url": row["playlist_url"]}
+
+
 async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str | None = None,
                           title: str | None = None, artist: str | None = None) -> list[dict]:
     """Check if a track is a duplicate across all imported playlists.
 
     Returns list of dicts with 'match' type: 'exact', 'isrc', 'fuzzy_exact', 'fuzzy_contains', 'fuzzy_levenshtein'.
+
+    An exact or ISRC copy that someone kept with «Оставить» in a playlist that is still open proves
+    nothing yet, so it is held back: it does not stop the later steps from finding an older
+    lookalike, and comes first in the list once they have run.
     """
     duplicates = []
+    held_back = []  # see the docstring
+
+    def collect(kind: str, row: asyncpg.Record) -> None:
+        kept_here = row["kept_here"] and row["playlist_status"] in OPEN_PLAYLIST_STATUSES
+        (held_back if kept_here else duplicates).append(_duplicate_match(kind, row))
+
     async with pool.acquire() as conn:
         # 1. Exact Track ID match
         rows = await conn.fetch(
             """
             SELECT t.spotify_track_id, t.title, t.artist,
-                   p.id as playlist_id, p.name as playlist_name, p.url as playlist_url
+                   p.id as playlist_id, p.name as playlist_name, p.url as playlist_url,
+                   p.status as playlist_status, k.playlist_id IS NOT NULL as kept_here
             FROM playlist_tracks pt
             JOIN tracks t ON pt.track_id = t.id
             JOIN playlists p ON pt.playlist_id = p.id
+            LEFT JOIN kept_duplicates k
+                   ON k.playlist_id = p.id AND k.spotify_track_id = t.spotify_track_id
             WHERE t.spotify_track_id = $1
             """,
             spotify_track_id,
         )
         for r in rows:
-            duplicates.append({"match": "exact", "spotify_track_id": r["spotify_track_id"],
-                               "title": r["title"], "artist": r["artist"],
-                               "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
-                               "url": r["playlist_url"]})
+            collect("exact", r)
 
         # 2. ISRC match (same song, different album)
         if isrc and not duplicates:
             rows = await conn.fetch(
                 """
                 SELECT t.spotify_track_id, t.title, t.artist,
-                       p.id as playlist_id, p.name as playlist_name, p.url as playlist_url
+                       p.id as playlist_id, p.name as playlist_name, p.url as playlist_url,
+                       p.status as playlist_status, k.playlist_id IS NOT NULL as kept_here
                 FROM playlist_tracks pt
                 JOIN tracks t ON pt.track_id = t.id
                 JOIN playlists p ON pt.playlist_id = p.id
+                LEFT JOIN kept_duplicates k
+                       ON k.playlist_id = p.id AND k.spotify_track_id = t.spotify_track_id
                 WHERE t.isrc = $1 AND t.spotify_track_id != $2
                 """,
                 isrc, spotify_track_id,
@@ -173,10 +197,7 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
                 if title and (has_version_marker(title) or has_version_marker(r["title"])) \
                         and normalize_title(title) != normalize_title(r["title"]):
                     continue
-                duplicates.append({"match": "isrc", "spotify_track_id": r["spotify_track_id"],
-                                   "title": r["title"], "artist": r["artist"],
-                                   "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
-                                   "url": r["playlist_url"]})
+                collect("isrc", r)
 
         # 3. Fuzzy match (normalized title + artist)
         if not duplicates and title and artist:
@@ -197,18 +218,16 @@ async def check_duplicate(pool: asyncpg.Pool, spotify_track_id: str, isrc: str |
                 norm_artist, spotify_track_id,
             )
 
+            already_found = {(m["playlist_id"], m["spotify_track_id"]) for m in held_back}
             for r in candidates:
+                if (r["playlist_id"], r["spotify_track_id"]) in already_found:
+                    continue
                 cand_norm_title = r["normalized_title"] or normalize_title(r["title"])
                 match_type = is_fuzzy_match(norm_title, cand_norm_title, norm_artist, norm_artist)
                 if match_type:
-                    duplicates.append({
-                        "match": match_type, "spotify_track_id": r["spotify_track_id"],
-                        "title": r["title"], "artist": r["artist"],
-                        "playlist": r["playlist_name"], "playlist_id": r["playlist_id"],
-                        "url": r["playlist_url"],
-                    })
+                    duplicates.append(_duplicate_match(match_type, r))
 
-    return duplicates
+    return held_back + duplicates
 
 
 async def classify_duplicates(pool: asyncpg.Pool, duplicates: list[dict]) -> list[dict]:
@@ -279,6 +298,47 @@ async def classify_duplicates(pool: asyncpg.Pool, duplicates: list[dict]) -> lis
                 d["session_status"] = row["vote_result"]  # 'keep', 'drop', 'pending'
 
     return duplicates
+
+
+async def mark_duplicate_kept(pool: asyncpg.Pool, playlist_spotify_id: str,
+                              spotify_track_id: str, telegram_id: int) -> None:
+    """Remember that this track stays in this one playlist despite looking like a duplicate.
+
+    Duplicate checks only run on open playlists, so for an unknown or closed playlist
+    there is nothing to remember and nothing is stored.
+    """
+    async with pool.acquire() as conn:
+        playlist = await conn.fetchrow(
+            "SELECT id, status FROM playlists WHERE spotify_id = $1", playlist_spotify_id,
+        )
+        if playlist is None or playlist["status"] not in OPEN_PLAYLIST_STATUSES:
+            return
+        await conn.execute(
+            """
+            INSERT INTO kept_duplicates (playlist_id, spotify_track_id, kept_by)
+            VALUES ($1, $2, $3)
+            ON CONFLICT DO NOTHING
+            """,
+            playlist["id"], spotify_track_id, telegram_id,
+        )
+
+
+async def get_kept_track_ids(pool: asyncpg.Pool, playlist_db_id: int) -> set[str]:
+    """Tracks that duplicate checks must leave alone in this playlist."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT spotify_track_id FROM kept_duplicates WHERE playlist_id = $1", playlist_db_id,
+        )
+    return {row["spotify_track_id"] for row in rows}
+
+
+async def forget_kept_duplicates(pool: asyncpg.Pool, playlist_db_id: int, spotify_track_ids: list[str]) -> None:
+    """Drop the «Оставить» decisions for these tracks in this playlist."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM kept_duplicates WHERE playlist_id = $1 AND spotify_track_id = ANY($2)",
+            playlist_db_id, spotify_track_ids,
+        )
 
 
 async def check_siblings(pool: asyncpg.Pool, spotify_track_id: str,

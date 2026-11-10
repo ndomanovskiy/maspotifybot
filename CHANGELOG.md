@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-11-10
+- **feat:** Pressing «Оставить» on a suspected duplicate or a previously dropped track is now remembered for that one playlist while it is open (nothing is stored for a closed or unknown playlist, which is never checked). The duplicate watcher skips the track there the way it skips a thematic playlist; `/scan` skips it too and reports how many it skipped. The same track added to another playlist is still checked: while its playlist is open, the kept copy no longer stops the ISRC and fuzzy steps from finding an older lookalike. The kept track is saved like any other track of the playlist, so it gets a genre and facts and goes through distribution. Kept and thematic tracks now get an ISRC lookup before saving when Spotify left it out (other tracks already had one in the duplicate check). Pressing «Удалить», or the track leaving an open playlist, forgets the decision.
+- **fix:** Editing a message after «Оставить», «Удалить», approve, deny or a join request keeps its bold text and links, escapes user text (`message.html_text`) and shows no link preview. The join request from `/join` and from the old join button escapes the user's name. «Оставить» and «Удалить» take the buttons away while working; they come back only if saving fails or the track could not be removed from Spotify. Auto-removal notices label each match by its kind instead of calling every non-exact match ISRC.
+- **db:** Migration 70: `kept_duplicates`.
+- **chore:** Removed the VPS deploy workflow: a push to main no longer deploys anywhere.
 - **fix:** ISRC was never read: tekore returns `external_ids` as a dict, while the code used `getattr(external_ids, "isrc", None)`, so every track was stored without it and the ISRC duplicate step never fired. Added `extract_isrc`, used in all 4 places.
 - **data:** Filled `tracks.isrc` for 2962 of 2964 tracks from Spotify (one-off script, no duplicates removed). Same-recording pairs across history: 6, latest in TURDOM#93.
 - **feat:** New playlist no longer notifies anyone automatically. The admin gets a private picker with a tick per registered user and a Send button (`app/bot/playlist_notify.py`).

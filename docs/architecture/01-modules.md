@@ -88,13 +88,13 @@ graph TB
 
 | File | Lines | Responsibility |
 |------|-------|----------------|
-| `app/bot/__init__.py` | 139 | Router wiring, `setup_bot()` |
+| `app/bot/__init__.py` | 252 | Router wiring, `setup_bot()` |
 | `app/bot/core.py` | 138 | `bot`, `dp`, `pool`, `is_admin`, `is_registered`, `extract_spotify_id`, decorators (`@require_admin`, `@require_registered`, `@require_admin_callback`), message helpers (`send`, `reply`, `send_photo`, `reply_photo`, `edit_text`, `edit_caption`), `safe_int`, `parse_turdom_number` |
 | `app/bot/session_manager.py` | 535 | `SessionManager` singleton: all session state, `on_track_change`, `end_session`, `check_session_complete`, `finalize_track_card`, `update_vote_buttons`, `recover`, `send_recap_carousel`, `cache_pre_recap_teaser` |
-| `app/bot/callbacks.py` | 401 | All `callback_query` handlers: voting, skip, regen_facts, approve/deny, session control, recap carousel, playlist creation, history pagination |
+| `app/bot/callbacks.py` | 649 | All `callback_query` handlers: voting, skip, regen_facts, approve/deny, session control, recap carousel, playlist creation, history pagination, duplicate «Удалить»/«Оставить» |
 | `app/bot/playlist_notify.py` | — | Admin picker for who gets notified about a new playlist: `offer_notification`, `handle_callback` |
-| `app/bot/commands/user.py` | 697 | `/start`, `/reg`, `/next`, `/get`, `/genres`, `/check`, `/stats`, `/mystats`, `/history`, `/join`, `/leave`, `/secret` |
-| `app/bot/commands/admin.py` | 575 | `/auth`, `/session`, `/preview`, `/reschedule`, `/scan`, `/import`, `/import_all`, `/distribute`, `/recap`, `/close_playlist`, `/create_next`, `/health`, `/dbinfo`, `/backfill_genres` |
+| `app/bot/commands/user.py` | 798 | `/start`, `/reg`, `/next`, `/get`, `/genres`, `/check`, `/stats`, `/mystats`, `/history`, `/join`, `/leave`, `/secret` |
+| `app/bot/commands/admin.py` | 747 | `/auth`, `/session`, `/preview`, `/reschedule`, `/scan`, `/import`, `/import_all`, `/distribute`, `/recap`, `/close_playlist`, `/create_next`, `/health`, `/dbinfo`, `/backfill_genres` |
 | `app/config.py` | — | Pydantic settings (env vars) |
 | `app/main.py` | — | Entry point, pool + schema init |
 
@@ -103,7 +103,7 @@ graph TB
 | File | Responsibility | Depends On |
 |------|----------------|------------|
 | `app/services/voting.py` | Vote recording, threshold calculation, track removal, skip | auth.py, pool |
-| `app/services/playlists.py` | Playlist import, duplicate check, create/reschedule | auth.py, genre_resolver.py, pool |
+| `app/services/playlists.py` | Playlist import, duplicate check, «Оставить» decisions (`kept_duplicates`), create/reschedule | auth.py, genre_resolver.py, pool |
 | `app/services/admin_commands.py` | Post-session commands: distribute, recap, close, create_next, dbinfo | genre_distributor.py, playlists.py, ai.py, pool |
 | `app/services/genre_distributor.py` | Genre classification (GENRE_MAP), distribute tracks to genre playlists | auth.py, pool |
 | `app/services/genre_resolver.py` | Resolve track genre via Spotify artist API, backfill | auth.py, pool |

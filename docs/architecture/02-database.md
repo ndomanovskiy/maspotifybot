@@ -109,6 +109,13 @@ erDiagram
         timestamptz created_at
     }
 
+    kept_duplicates {
+        integer playlist_id PK,FK
+        text spotify_track_id PK
+        bigint kept_by
+        timestamptz kept_at
+    }
+
     spotify_tokens {
         serial id PK
         text refresh_token
@@ -131,6 +138,7 @@ erDiagram
     }
 
     playlists ||--o{ playlist_tracks : has
+    playlists ||--o{ kept_duplicates : has
     sessions ||--o{ session_tracks : has
     sessions ||--o{ session_participants : has
     session_tracks ||--o{ votes : has
@@ -146,6 +154,7 @@ erDiagram
 | Relationship | Type | Join Key |
 |---|---|---|
 | playlists → playlist_tracks | 1:N | playlist_tracks.playlist_id |
+| playlists → kept_duplicates | 1:N | kept_duplicates.playlist_id |
 | sessions → session_tracks | 1:N | session_tracks.session_id |
 | sessions → session_participants | 1:N | session_participants.session_id |
 | session_tracks → votes | 1:N | votes.session_track_id |
@@ -161,8 +170,11 @@ erDiagram
 ## Notes
 
 - **3 foreign keys on telegram_id** — `session_participants`, `votes`, `ratings` reference `users.telegram_id` (ON DELETE CASCADE)
+- **`kept_duplicates` has no foreign key to `playlist_tracks`** — a suspected duplicate is not saved to `playlist_tracks` until someone keeps it, so the row has to exist first. The key `(playlist_id, spotify_track_id)` mirrors `playlist_tracks` on purpose, and there is no `id` column.
+- **`kept_duplicates.kept_by` has no foreign key to `users`** — the admin can press «Оставить» without a `users` row (`is_registered` lets the admin through).
+- **`kept_duplicates` rows matter only while their playlist is open** — rows of a playlist that closes later are never read again and go away with the playlist (ON DELETE CASCADE).
 - **18 indexes** on frequently queried columns (Phase 4)
-- **Versioned migrations** tracked in `schema_version` (32 migrations)
+- **Versioned migrations** tracked in `schema_version` (70 migrations)
 - `playlist_tracks` unique constraint: `(playlist_id, spotify_track_id)` — same track can exist in multiple playlists
 - `votes` unique constraint: `(session_track_id, telegram_id)` — one vote per user per track
 - `session_tracks` ↔ `playlist_tracks` joined via `spotify_track_id` — used in distribute to get genre

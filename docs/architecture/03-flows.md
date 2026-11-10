@@ -139,21 +139,31 @@ sequenceDiagram
         DW->>DB: Get known track IDs per playlist
 
         loop Each playlist
+            DW->>DB: Get tracks kept with «Оставить» (kept_duplicates)
             DW->>Spotify: Get current tracks
-            loop Each new track
-                DW->>DB: INSERT playlist_tracks
-                DW->>GR: resolve_and_save_genre(track)
-                GR->>Spotify: Get artist genres
-                GR->>DB: UPDATE genre
-
-                DW->>DB: Check duplicate (track_id + ISRC)
-                alt Duplicate found AND not thematic
-                    DW->>Spotify: Remove track from playlist
-                    DW->>DB: DELETE playlist_tracks
-                    DW->>User: "Дубликат! Уже есть в [playlist]"
+            loop Each track
+                alt Thematic playlist OR track kept in this playlist
+                    Note over DW: Skip duplicate checks
+                else
+                    DW->>DB: Check duplicate (track ID, ISRC, fuzzy title + artist)
+                    alt Same track (track ID or ISRC) voted keep or still pending in a session elsewhere, or in a listened playlist
+                        DW->>Spotify: Remove track from playlist
+                        DW->>User: "Дубликат! Уже есть в [playlist]"
+                    else Lookalike, or the match was dropped
+                        DW->>User: Ask: 🗑 Удалить / ✅ Оставить
+                    end
+                end
+                opt New track that is not a duplicate
+                    DW->>DB: INSERT tracks + playlist_tracks
+                    DW->>GR: resolve_and_save_genre(track)
+                    GR->>Spotify: Get artist genres
+                    GR->>DB: UPDATE genre
+                    DW->>User: Dropped in a past session? Ask ✅ Оставить / 🗑 Убрать (not thematic, not kept)
                 end
             end
+            DW->>DB: Delete playlist_tracks and kept_duplicates rows of tracks gone from the playlist
         end
+        Note over User,DB: «Оставить» stores a kept_duplicates row for this playlist while it is open. «Удалить» removes the track and that row.
 
         Note over DW: Also generate AI facts
         DW->>DB: Get tracks without ai_facts (upcoming playlist)

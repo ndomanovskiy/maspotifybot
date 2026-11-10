@@ -5,7 +5,10 @@ from datetime import datetime, timezone
 import asyncpg
 
 from app.spotify.auth import get_spotify
-from app.services.playlists import check_duplicate, classify_duplicates, check_siblings, extract_isrc, get_track_isrc
+from app.services.playlists import (
+    check_duplicate, classify_duplicates, check_siblings, extract_isrc, forget_kept_duplicates,
+    get_kept_track_ids, get_track_isrc,
+)
 from app.services.ai import generate_track_facts
 from app.services.genre_resolver import resolve_and_save_genre
 from app.services.genre_distributor import check_previously_dropped
@@ -224,6 +227,7 @@ class DuplicateWatcher:
 
             # known_ids: only used to skip DB insert for already-saved tracks
             known_ids = await self._get_known_track_ids(playlist_db_id)
+            kept_ids = await get_kept_track_ids(self._pool, playlist_db_id)
 
             # Fetch current tracks from Spotify (with pagination)
             try:
@@ -252,8 +256,8 @@ class DuplicateWatcher:
                 # Get ISRC once per track
                 isrc = extract_isrc(track)
 
-                # ── Step 1: Check duplicates (skip thematic, skip already-checked) ──
-                if not is_thematic and track.id not in checked_ids:
+                # ── Step 1: Check duplicates (skip thematic, kept, already-checked) ──
+                if not is_thematic and track.id not in checked_ids and track.id not in kept_ids:
                     checked_ids.add(track.id)
 
                     if not isrc:
@@ -283,6 +287,8 @@ class DuplicateWatcher:
 
                 # ── Step 2: Save to DB (only if not duplicate and not yet known) ──
                 if track.id not in known_ids:
+                    if not isrc and (is_thematic or track.id in kept_ids):  # step 1 skipped the lookup
+                        isrc = await get_track_isrc(track.id)
 
                     async with self._pool.acquire() as conn:
                         try:
@@ -318,7 +324,7 @@ class DuplicateWatcher:
                         log.warning(f"Failed to resolve genre for '{track.name}': {e}")
 
                     # ── Step 3: Check drops/siblings (only for new non-duplicate tracks) ──
-                    if not is_thematic:
+                    if not is_thematic and track.id not in kept_ids:
                         drops = await check_previously_dropped(self._pool, track.id)
                         if drops and self._drop_warn:
                             telegram_id = await self._resolve_telegram_id(added_by)
@@ -360,5 +366,9 @@ class DuplicateWatcher:
                     )
                 log.info(f"Cleaned {len(stale_ids)} stale track(s) from '{pl['name']}'")
 
+            # A kept track that left the playlist starts from scratch if it comes back
+            stale_kept = kept_ids - spotify_ids
+            if stale_kept:
+                await forget_kept_duplicates(self._pool, playlist_db_id, list(stale_kept))
 
             log.debug(f"Checked playlist {pl['name']}")

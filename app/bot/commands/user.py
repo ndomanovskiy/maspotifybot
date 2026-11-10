@@ -575,7 +575,8 @@ async def cmd_join(message: Message):
     ]])
     await send(
         settings.telegram_admin_id,
-        f"🙋 <b>{message.from_user.full_name}</b> (@{message.from_user.username or '—'}) хочет присоединиться. Пустить?",
+        f"🙋 <b>{html.escape(message.from_user.full_name)}</b> "
+        f"(@{html.escape(message.from_user.username or '—')}) хочет присоединиться. Пустить?",
         reply_markup=approve_kb,
     )
     await message.answer("⏳ Запрос отправлен ведущему. Жди подтверждения!")

@@ -13,7 +13,7 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from app.config import settings
 from app.spotify.auth import start_oauth, exchange_code, run_oauth_callback_server, get_spotify
 from app.services.playlists import (
-    import_playlist, import_all_turdom, check_duplicate, classify_duplicates, extract_isrc,
+    import_playlist, import_all_turdom, check_duplicate, classify_duplicates, extract_isrc, get_kept_track_ids,
     get_track_isrc, create_next_playlist, reschedule_playlist,
 )
 from app.services.genre_resolver import backfill_genres
@@ -278,6 +278,7 @@ async def cmd_scan(message: Message):
         removed_count = 0
         suspicious_count = 0
         phantom_count = 0
+        kept_count = 0
 
         # Pre-fetch all users for display name resolution (avoid N+1)
         user_name_cache: dict[str, str] = {}
@@ -298,8 +299,12 @@ async def cmd_scan(message: Message):
                 if offset >= items.total:
                     break
 
+            kept_ids = await get_kept_track_ids(get_pool(), pl["id"])
             for item in all_items:
                 if not item.track or not item.track.id:
+                    continue
+                if item.track.id in kept_ids:
+                    kept_count += 1
                     continue
                 track = item.track
 
@@ -388,6 +393,8 @@ async def cmd_scan(message: Message):
             parts.append(f"🔍 На подтверждение: {suspicious_count}")
         if phantom_count:
             parts.append(f"👻 Фантомов пропущено: {phantom_count}")
+        if kept_count:
+            parts.append(f"📌 Оставлено ранее: {kept_count}")
         if not removed_count and not suspicious_count:
             parts.append("Дубликатов не найдено")
         await message.answer(" ".join(parts))

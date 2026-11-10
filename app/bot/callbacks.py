@@ -6,12 +6,13 @@ import html
 import logging
 
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import CallbackQuery, InaccessibleMessage, InlineKeyboardMarkup, InlineKeyboardButton
 
 from app.config import settings
 from app.spotify.auth import get_spotify
 from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next
-from app.services.playlists import create_next_playlist
+from app.services.playlists import create_next_playlist, forget_kept_duplicates, mark_duplicate_kept
 from app.services.ai import generate_track_facts
 from app.services.track_formatter import format_track
 from app.services.admin_commands import cmd_distribute_force, cmd_recap_regenerate, log_action
@@ -25,6 +26,63 @@ from app.bot.session_manager import session
 log = logging.getLogger(__name__)
 
 router = Router()
+
+
+# ── Shared helpers ──────────────────────────────────────────────
+
+def remove_duplicate_button(playlist_spotify_id: str, track_id: str, text: str) -> InlineKeyboardButton:
+    """The button whose press removes this track from this playlist."""
+    return InlineKeyboardButton(text=text, callback_data=f"confirm_dup:{playlist_spotify_id}:{track_id}")
+
+
+def keep_duplicate_button(playlist_spotify_id: str, track_id: str) -> InlineKeyboardButton:
+    """The «Оставить» button whose press keeps this track in this playlist."""
+    return InlineKeyboardButton(text="✅ Оставить", callback_data=f"keep_dup:{playlist_spotify_id}:{track_id}")
+
+
+def _shown(callback: CallbackQuery) -> bool:
+    """Whether Telegram still lets the bot edit the message the button was on."""
+    return callback.message is not None and not isinstance(callback.message, InaccessibleMessage)
+
+
+async def _set_buttons(callback: CallbackQuery, markup: InlineKeyboardMarkup | None) -> None:
+    """Hide the buttons, or bring them back after a failure so the user can try again."""
+    if not _shown(callback):
+        return
+    try:
+        await callback.message.edit_reply_markup(reply_markup=markup)
+    except Exception as e:
+        if markup is None:
+            log.debug(f"Could not hide the buttons: {e}")
+        else:
+            log.warning(f"Could not bring the buttons back, the user has nothing to retry with: {e}")
+
+
+async def _close_question(callback: CallbackQuery, outcome: str) -> None:
+    """Append the outcome to the message the buttons were on."""
+    if not _shown(callback):
+        return
+    try:
+        await callback.message.edit_text(
+            f"{callback.message.html_text}\n\n{outcome}",
+            parse_mode="HTML",
+            link_preview_options=_NO_PREVIEW,
+        )
+    except TelegramBadRequest as e:
+        if "not modified" in str(e):
+            log.debug(f"Question already closed, probably by a second tap: {e}")
+        else:
+            log.warning(f"Could not close the question: {e}")
+    except Exception as e:
+        log.warning(f"Could not close the question: {e}")
+
+
+async def _answer(callback: CallbackQuery, text: str, **kwargs) -> None:
+    """Answer the tap; after slow Spotify or DB calls Telegram may already find it too old."""
+    try:
+        await callback.answer(text, **kwargs)
+    except Exception as e:
+        log.debug(f"Could not answer the tap: {e}")
 
 
 # ── Start listening ─────────────────────────────────────────────
@@ -304,8 +362,8 @@ async def on_approve(callback: CallbackQuery):
                     session.active_session_id, tid,
                 )
 
-    await callback.answer("✅ Одобрено!")
-    await callback.message.edit_text(f"{callback.message.text}\n\n✅ Одобрено!", parse_mode="HTML")
+    await _close_question(callback, "✅ Одобрено!")
+    await _answer(callback, "✅ Одобрено!")
     try:
         await send(tid, f"✅ Ты в деле! Участников: {len(session.participants)}")
     except Exception as e:
@@ -321,8 +379,8 @@ async def on_deny(callback: CallbackQuery):
     if tid is None:
         await callback.answer("Ошибка")
         return
-    await callback.answer("❌ Отказано")
-    await callback.message.edit_text(f"{callback.message.text}\n\n❌ Отказано", parse_mode="HTML")
+    await _close_question(callback, "❌ Отказано")
+    await _answer(callback, "❌ Отказано")
     try:
         await send(tid, "❌ Ведущий не одобрил присоединение.")
     except Exception as e:
@@ -347,14 +405,12 @@ async def on_join_session(callback: CallbackQuery):
     ]])
     await send(
         settings.telegram_admin_id,
-        f"🙋 <b>{callback.from_user.full_name}</b> (@{callback.from_user.username or '—'}) хочет присоединиться. Пустить?",
+        f"🙋 <b>{html.escape(callback.from_user.full_name)}</b> "
+        f"(@{html.escape(callback.from_user.username or '—')}) хочет присоединиться. Пустить?",
         reply_markup=approve_kb,
     )
-    await callback.answer("⏳ Запрос отправлен ведущему!")
-    await callback.message.edit_text(
-        f"{callback.message.text}\n\n⏳ Запрос отправлен, жди подтверждения...",
-        parse_mode="HTML",
-    )
+    await _close_question(callback, "⏳ Запрос отправлен, жди подтверждения...")
+    await _answer(callback, "⏳ Запрос отправлен ведущему!")
 
 
 # ── Create playlist ─────────────────────────────────────────────
@@ -525,18 +581,23 @@ async def on_confirm_dup(callback: CallbackQuery):
     playlist_spotify_id = parts[1]
     track_id = parts[2]
 
-    # Guard against double-click
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    # Guard against double-click; the buttons come back only if the track stays in the playlist
+    buttons = getattr(callback.message, "reply_markup", None)
+    await _set_buttons(callback, None)
 
     try:
         from app.spotify.auth import get_spotify
         sp = await get_spotify()
         await sp.playlist_remove(playlist_spotify_id, [f"spotify:track:{track_id}"])
+    except Exception as e:
+        log.error(f"Failed to remove fuzzy duplicate: {e}")
+        await _set_buttons(callback, buttons)
+        await _answer(callback, "Не получилось убрать трек из Spotify, попробуй ещё раз", show_alert=True)
+        return
+    log.info(f"Fuzzy duplicate confirmed and removed: {track_id} from {playlist_spotify_id}")
 
-        # Remove from DB — scoped to this playlist only
+    # The track is gone; if tidying the DB fails, the watcher drops these rows once it sees that
+    try:
         async with get_pool().acquire() as conn:
             playlist_db_id = await conn.fetchval(
                 "SELECT id FROM playlists WHERE spotify_id = $1", playlist_spotify_id
@@ -546,23 +607,43 @@ async def on_confirm_dup(callback: CallbackQuery):
                     "DELETE FROM playlist_tracks WHERE playlist_id = $1 AND spotify_track_id = $2",
                     playlist_db_id, track_id,
                 )
-
-        await callback.answer("🗑 Удалено!")
-        await callback.message.edit_text(
-            f"{callback.message.text}\n\n🗑 <b>Удалено</b>",
-            parse_mode="HTML",
-        )
-        log.info(f"Fuzzy duplicate confirmed and removed: {track_id} from {playlist_spotify_id}")
+        if playlist_db_id:
+            await forget_kept_duplicates(get_pool(), playlist_db_id, [track_id])
     except Exception as e:
-        log.error(f"Failed to remove fuzzy duplicate: {e}")
-        await callback.answer(f"Ошибка: {e}", show_alert=True)
+        log.warning(f"Removed {track_id} but could not tidy the DB: {e}")
+
+    await _close_question(callback, "🗑 <b>Удалено</b>")
+    await _answer(callback, "🗑 Удалено!")
 
 
 @router.callback_query(F.data.startswith("keep_dup:"))
 async def on_keep_dup(callback: CallbackQuery):
-    """User said it's not a duplicate — keep it."""
-    await callback.answer("✅ Оставлено")
-    await callback.message.edit_text(
-        f"{callback.message.text}\n\n✅ <b>Оставлено</b>",
-        parse_mode="HTML",
+    """User said it's not a duplicate — keep it in this playlist."""
+    if not await is_registered(callback.from_user.id):
+        await callback.answer("⛔ Только для участников", show_alert=True)
+        return
+
+    # keep_dup:<playlist>:<track>; older buttons carry only the track and have nothing to remember
+    parts = callback.data.split(":")
+    if len(parts) not in (2, 3):
+        await callback.answer("Ошибка")
+        return
+
+    # Guard against double-click; the buttons come back if the decision cannot be saved
+    buttons = getattr(callback.message, "reply_markup", None)
+    await _set_buttons(callback, None)
+
+    if len(parts) == 3:
+        try:
+            await mark_duplicate_kept(get_pool(), parts[1], parts[2], callback.from_user.id)
+        except Exception as e:
+            log.error(f"Failed to keep duplicate: {e}")
+            await _set_buttons(callback, buttons)
+            await _answer(callback, "Не удалось сохранить, попробуй ещё раз", show_alert=True)
+            return
+
+    await _close_question(callback, "✅ <b>Оставлено</b>")
+    await _answer(
+        callback,
+        "✅ Оставлено" if len(parts) == 3 else "✅ Оставлено. Кнопка старая, поэтому бот может спросить снова",
     )
