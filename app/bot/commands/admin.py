@@ -10,25 +10,24 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
-from app.config import settings
 from app.spotify.auth import start_oauth, exchange_code, run_oauth_callback_server, get_spotify
 from app.services.playlists import (
     import_playlist, import_all_turdom, check_duplicate, classify_duplicates, extract_isrc, get_kept_track_ids,
-    get_track_isrc, create_next_playlist, reschedule_playlist,
+    get_track_isrc, reschedule_playlist,
 )
 from app.services.genre_resolver import backfill_genres
 from app.services.ai import generate_track_facts
 from app.services.track_formatter import build_track_caption
 from app.services.admin_commands import (
-    cmd_distribute, cmd_distribute_force, cmd_recap, cmd_recap_regenerate,
-    cmd_close_playlist, cmd_create_next, cmd_dbinfo, log_action, check_duplicate_session,
+    cmd_distribute, cmd_recap, cmd_close_playlist, cmd_create_next, cmd_dbinfo, check_duplicate_session,
 )
 from app.bot.core import (
-    get_pool, is_admin, require_admin, extract_spotify_id, parse_turdom_number,
-    reply, send, reply_photo, display_name,
+    get_pool, require_admin, extract_spotify_id, parse_turdom_number,
+    reply, send, reply_photo,
 )
 from app.bot.playlist_notify import offer_notification
 from app.bot.session_manager import session
+from app.utils import display_name, escape_html
 
 log = logging.getLogger(__name__)
 
@@ -144,7 +143,7 @@ async def cmd_session(message: Message):
     names = await session.get_participant_names()
     session_msg = await reply(
         message,
-        f"🎧 Сессия создана: <b>{playlist_name}</b>\n"
+        f"🎧 Сессия создана: <b>{escape_html(playlist_name)}</b>\n"
         f"👥 Участников: {len(session.participants)} — {names}\n\n"
         f"Жди пока все присоединятся, потом жми кнопку.",
         reply_markup=start_kb,
@@ -267,7 +266,7 @@ async def cmd_scan(message: Message):
     try:
         async with get_pool().acquire() as conn:
             playlists = await conn.fetch(
-                "SELECT id, spotify_id, name FROM playlists WHERE status IN ('active', 'upcoming')"
+                "SELECT id, spotify_id, name, is_thematic FROM playlists WHERE status IN ('active', 'upcoming')"
             )
 
         if not playlists:
@@ -279,6 +278,7 @@ async def cmd_scan(message: Message):
         suspicious_count = 0
         phantom_count = 0
         kept_count = 0
+        thematic_count = 0
 
         # Pre-fetch all users for display name resolution (avoid N+1)
         user_name_cache: dict[str, str] = {}
@@ -290,6 +290,9 @@ async def cmd_scan(message: Message):
                 user_name_cache[u["spotify_id"]] = display_name(u["telegram_username"], u["telegram_name"])
 
         for pl in playlists:
+            if pl["is_thematic"]:  # repeats are fine there, the watcher skips them too
+                thematic_count += 1
+                continue
             all_items = []
             offset = 0
             while True:
@@ -386,7 +389,7 @@ async def cmd_scan(message: Message):
                             added_by_name=added_by_name,
                         )
 
-        parts = [f"✅ Сканирование завершено!"]
+        parts = ["✅ Сканирование завершено!"]
         if removed_count:
             parts.append(f"🗑 Удалено: {removed_count}")
         if suspicious_count:
@@ -395,7 +398,11 @@ async def cmd_scan(message: Message):
             parts.append(f"👻 Фантомов пропущено: {phantom_count}")
         if kept_count:
             parts.append(f"📌 Оставлено ранее: {kept_count}")
-        if not removed_count and not suspicious_count:
+        if thematic_count:
+            parts.append(f"🎭 Тематических пропущено: {thematic_count}")
+        if thematic_count == len(playlists):
+            parts.append("Сканировать было нечего: все открытые плейлисты тематические")
+        elif not removed_count and not suspicious_count:
             parts.append("Дубликатов не найдено")
         await message.answer(" ".join(parts))
     except Exception as e:
@@ -414,7 +421,7 @@ async def cmd_import_all(message: Message):
         total_tracks = sum(r["tracks"] for r in results)
         text = f"✅ <b>Импорт завершён!</b>\n\nПлейлистов: {len(results)}\nТреков: {total_tracks}\n\n"
         for r in results[:20]:
-            text += f"• {r['name']} — {r['tracks']} треков\n"
+            text += f"• {escape_html(r['name'])} — {r['tracks']} треков\n"
         if len(results) > 20:
             text += f"\n...и ещё {len(results) - 20}"
         await reply(message, text)
@@ -429,7 +436,7 @@ async def cmd_import_all(message: Message):
 async def cmd_import(message: Message):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer("Укажи ссылку: /import &lt;playlist_url&gt;")
+        await message.answer("Укажи ссылку: /import <playlist_url>")  # plain text, no parse_mode
         return
 
     playlist_id = extract_spotify_id(args[1].strip(), "playlist")
@@ -442,7 +449,7 @@ async def cmd_import(message: Message):
         result = await import_playlist(get_pool(), playlist_id)
         await reply(
             message,
-            f"✅ <b>{result['name']}</b> — {result['tracks']} треков импортировано!",
+            f"✅ <b>{escape_html(result['name'])}</b> — {result['tracks']} треков импортировано!",
         )
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -525,7 +532,10 @@ async def cmd_playlist(message: Message):
             return
         result = await reschedule_playlist(get_pool(), rest)
         if result:
-            await reply(message, f"📅 Перенесено:\n<s>{result['old_name']}</s>\n→ <b>{result['new_name']}</b>")
+            await reply(
+                message,
+                f"📅 Перенесено:\n<s>{escape_html(result['old_name'])}</s>\n→ <b>{escape_html(result['new_name'])}</b>",
+            )
         else:
             await message.answer("Нет предстоящих плейлистов для переноса.")
 
@@ -576,7 +586,7 @@ async def _playlist_status(message: Message):
             ORDER BY t.title
         """, pl["id"])
 
-    lines = [f"📋 <b>{pl['name']}</b>\n"]
+    lines = [f"📋 <b>{escape_html(pl['name'])}</b>\n"]
     lines.append(f"🎵 Треков: {stats['total']}")
     lines.append(f"💡 Факты: {stats['with_facts']}/{stats['total']}")
     lines.append(f"🎸 Жанры: {stats['with_genre']}/{stats['total']}")
@@ -584,19 +594,19 @@ async def _playlist_status(message: Message):
     if stats["no_facts"] > 0:
         lines.append(f"\n❌ <b>Без фактов ({stats['no_facts']}):</b>")
         for t in no_facts_tracks[:10]:
-            lines.append(f"   • {t['title']} — {t['artist']}")
+            lines.append(f"   • {escape_html(t['title'])} — {escape_html(t['artist'])}")
         if stats["no_facts"] > 10:
             lines.append(f"   ...и ещё {stats['no_facts'] - 10}")
 
     if stats["no_genre"] > 0:
         lines.append(f"\n❌ <b>Без жанра ({stats['no_genre']}):</b>")
         for t in no_genre_tracks[:10]:
-            lines.append(f"   • {t['title']} — {t['artist']}")
+            lines.append(f"   • {escape_html(t['title'])} — {escape_html(t['artist'])}")
         if stats["no_genre"] > 10:
             lines.append(f"   ...и ещё {stats['no_genre'] - 10}")
 
     if stats["no_facts"] == 0 and stats["no_genre"] == 0:
-        lines.append(f"\n✅ Всё готово к сессии!")
+        lines.append("\n✅ Всё готово к сессии!")
 
     await reply(message, "\n".join(lines))
 

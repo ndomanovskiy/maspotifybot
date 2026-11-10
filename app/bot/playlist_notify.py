@@ -5,12 +5,12 @@ so the picker survives a bot restart. _pickers only settles taps that race
 each other while the bot is running.
 """
 
-import html
 import logging
 
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.bot.core import display_name, edit_text, get_pool, safe_int, send
+from app.bot.core import edit_text, get_pool, safe_int, send
+from app.utils import display_name, escape_html
 from app.config import settings
 
 log = logging.getLogger(__name__)
@@ -72,8 +72,8 @@ async def _quietly(awaitable, what: str) -> None:
 
 async def _deliver(callback: CallbackQuery, playlist, people: list[tuple[int, str]], selected: set[int]) -> None:
     chat_id, message_id = callback.message.chat.id, callback.message.message_id
-    name = html.escape(playlist["name"])
-    url = html.escape(playlist["url"] or "")
+    name = escape_html(playlist["name"])
+    url = escape_html(playlist["url"] or "")
     await _quietly(callback.answer("Отправляю…"), "Button answer")
     await _quietly(edit_text(chat_id, message_id, f"⏳ Отправляю: <b>{name}</b>"), "Progress update")
 
@@ -90,9 +90,9 @@ async def _deliver(callback: CallbackQuery, playlist, people: list[tuple[int, st
 
     report = [f"📣 Уведомление о <b>{name}</b>"]
     if delivered:
-        report.append("✅ Получили: " + ", ".join(html.escape(person) for person in delivered))
+        report.append("✅ Получили: " + ", ".join(escape_html(person) for person in delivered))
     if failed:
-        report.append("⚠️ Не дошло: " + ", ".join(html.escape(person) for person in failed))
+        report.append("⚠️ Не дошло: " + ", ".join(escape_html(person) for person in failed))
     text = "\n".join(report)
     try:
         await edit_text(chat_id, message_id, text)
@@ -182,7 +182,7 @@ async def offer_notification(playlist: dict) -> None:
             return
         await send(
             admin_id,
-            f"🔔 Кому отправить уведомление о <b>{html.escape(playlist['name'])}</b>?",
+            f"🔔 Кому отправить уведомление о <b>{escape_html(playlist['name'])}</b>?",
             reply_markup=_keyboard(playlist["number"], people, set()),
         )
     except Exception as e:

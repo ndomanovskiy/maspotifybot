@@ -302,6 +302,26 @@ def test_scan_checks_a_track_that_was_not_kept(store, fake_pool):
     assert "Оставлено ранее" not in report
 
 
+def test_scan_leaves_a_thematic_playlist_alone_like_the_watcher(store, fake_pool):
+    store.add_playlist(id=1, spotify_id="sp1", name="PL1", status="upcoming", is_thematic=True)
+
+    check, report = scan(fake_pool)
+
+    check.assert_not_called()
+    assert "Тематических пропущено: 1" in report
+    assert "Сканировать было нечего" in report and "Дубликатов не найдено" not in report
+
+
+def test_scan_checks_a_normal_playlist_next_to_a_thematic_one(store, fake_pool):
+    store.add_playlist(id=1, spotify_id="sp1", name="PL1", status="upcoming", is_thematic=True)
+    store.add_playlist(id=2, spotify_id="sp2", name="PL2", status="upcoming")
+
+    check, report = scan(fake_pool)
+
+    check.assert_awaited_once()  # only the normal playlist's track
+    assert "Тематических пропущено: 1" in report and "Дубликатов не найдено" in report
+
+
 def test_keep_button_with_broken_data_says_error(store, fake_pool):
     add_open_playlist(store)
     callback = press("keep_dup:sp1:new:extra")

@@ -16,8 +16,8 @@ Collaborative music listening bot: Telegram + Spotify. Users add tracks to share
 
 ## Tech Stack
 
-- **Bot:** Python 3.10+, aiogram v3
+- **Bot:** Python 3.12, aiogram v3
 - **Spotify:** tekore (async)
 - **DB:** PostgreSQL, asyncpg
-- **AI:** OpenAI GPT-4o-mini
-- **Deploy:** Docker, GitHub Actions CI/CD, Selectel VPS
+- **AI:** Claude Sonnet (track facts, recap), OpenAI GPT-4o-mini (genres)
+- **Deploy:** Docker Compose on the owner's PC since 2026-09-30

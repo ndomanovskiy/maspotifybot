@@ -1,9 +1,7 @@
 """User-facing command handlers: /start, /reg, /next, /get, /genres, /check,
 /stats, /mystats, /history, /join, /leave, /secret."""
 
-import html
 import logging
-import re
 
 from aiogram import Router
 from aiogram.filters import Command
@@ -11,14 +9,15 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from app.config import settings
 from app.services.playlists import get_next_playlist, check_duplicate, classify_duplicates, check_siblings, get_track_isrc
-from app.services.track_formatter import format_track, format_album
+from app.services.track_formatter import format_track
 from app.services.ai import analyze_easter_egg
 from app.services.genre_distributor import check_previously_dropped
 from app.bot.core import (
     bot, get_pool, is_admin, is_registered, require_registered, extract_spotify_id,
-    reply, send, display_name,
+    reply, send,
 )
 from app.bot.session_manager import session
+from app.utils import display_name, escape_html
 
 log = logging.getLogger(__name__)
 
@@ -124,7 +123,7 @@ async def cmd_next(message: Message):
     if result:
         await reply(
             message,
-            f"🎧 <b>{result['name']}</b> ({result['status']})\n\n{result['url']}",
+            f"🎧 <b>{escape_html(result['name'])}</b> ({result['status']})\n\n{escape_html(result['url'] or '')}",
         )
     else:
         await message.answer("Нет предстоящих плейлистов в базе.")
@@ -156,7 +155,7 @@ async def cmd_get(message: Message):
         await message.answer(f"TURDOM#{num} не найден.")
         return
 
-    await reply(message, f"🎧 <b>{pl['name']}</b>\n\n{pl['url']}")
+    await reply(message, f"🎧 <b>{escape_html(pl['name'])}</b>\n\n{escape_html(pl['url'] or '')}")
 
 
 # ── /genres ─────────────────────────────────────────────────────
@@ -178,7 +177,7 @@ async def cmd_genres(message: Message):
         short = name.replace("TURDOM ", "")
         emoji = GENRE_EMOJIS.get(short, "🎵")
         url = f"https://open.spotify.com/playlist/{spotify_id}"
-        lines.append(f"{emoji} <a href=\"{url}\">{name}</a>")
+        lines.append(f"{emoji} <a href=\"{url}\">{escape_html(name)}</a>")
 
     await reply(message, "\n".join(lines))
 
@@ -234,10 +233,12 @@ async def cmd_check(message: Message):
                 if d.get("session_status") == "drop":
                     label = "❌ дропнут ранее"
                 track_display = format_track(d["title"], d["artist"])
-                lines.append(f"• {track_display}\n  {label} в {d['playlist']}\n  {d['url']}")
+                lines.append(
+                    f"• {track_display}\n  {label} в {escape_html(d['playlist'])}\n  {escape_html(d['url'] or '')}"
+                )
             await reply(
                 message,
-                f"⚠️ <b>Дубликат найден!</b>\n\n" + "\n\n".join(lines),
+                "⚠️ <b>Дубликат найден!</b>\n\n" + "\n\n".join(lines),
             )
             return
 
@@ -249,7 +250,7 @@ async def cmd_check(message: Message):
         for s in siblings[:5]:
             track_display = format_track(s["title"], s["artist"])
             arrow = kind_label.get(s["kind"], "версия")
-            sib_lines.append(f"• {arrow}: {track_display}\n  в {html.escape(s['playlist'])}")
+            sib_lines.append(f"• {arrow}: {track_display}\n  в {escape_html(s['playlist'])}")
         if len(siblings) > 5:
             sib_lines.append(f"<i>…и ещё {len(siblings) - 5}</i>")
         await reply(
@@ -305,7 +306,7 @@ async def cmd_stats(message: Message):
     for name in ["Electronic", "Pop", "Metal", "Rock", "Hip-Hop", "Indie", "DnB", "R&B", "Chill", "Soundtrack", "Phonk"]:
         count = genre_totals.get(name, 0)
         emoji = GENRE_EMOJIS.get(name, "")
-        msg1 += f"{emoji} {name} — {count}\n"
+        msg1 += f"{emoji} {escape_html(name)} — {count}\n"
 
     async with get_pool().acquire() as conn:
         all_user_genres = await conn.fetch("""
@@ -335,8 +336,8 @@ async def cmd_stats(message: Message):
         tracks = r["tracks"]
         user_genres = user_genre_map.get(uname, {})
         top3 = sorted(user_genres.items(), key=lambda x: -x[1])[:3]
-        top3_str = " · ".join(f"{g} {c}" for g, c in top3)
-        msg2 += f"{uname} — {tracks} треков\n<code>{top3_str}</code>\n\n"
+        top3_str = " · ".join(f"{escape_html(g)} {c}" for g, c in top3)
+        msg2 += f"{escape_html(uname)} — {tracks} треков\n<code>{top3_str}</code>\n\n"
 
     await reply(message, msg1)
     await reply(message, msg2)
@@ -401,7 +402,7 @@ async def cmd_mystats(message: Message):
     top_emoji = GENRE_EMOJIS.get(top_genre, "🎵")
 
     msg = (
-        f"📊 <b>Статистика {display}</b>\n\n"
+        f"📊 <b>Статистика {escape_html(display)}</b>\n\n"
         f"🎵 Треков добавлено: <b>{total}</b>\n"
         f"📅 Сессий: <b>{sessions_count}</b>\n"
         f"✅ Осталось: <b>{votes_kept}</b> · ❌ Удалено: <b>{votes_dropped}</b>\n\n"
@@ -409,9 +410,9 @@ async def cmd_mystats(message: Message):
     )
     for g_name, g_count in top5:
         emoji = GENRE_EMOJIS.get(g_name, "")
-        msg += f"{emoji} {g_name} — {g_count}\n"
+        msg += f"{emoji} {escape_html(g_name)} — {g_count}\n"
 
-    msg += f"\n{top_emoji} <b>Профиль: {top_genre} Lover</b>"
+    msg += f"\n{top_emoji} <b>Профиль: {escape_html(top_genre)} Lover</b>"
 
     await reply(message, msg)
 
@@ -471,7 +472,7 @@ async def _show_history_page(message_or_callback, offset: int):
         deeplink = f"https://t.me/{bot_username}?start=history_{s['id']}"
 
         lines.append(
-            f"<a href=\"{deeplink}\"><b>{name}</b></a>\n"
+            f"<a href=\"{deeplink}\"><b>{escape_html(name)}</b></a>\n"
             f"📆 {date} · 🎵 {tracks} треков · 👥 {parts}\n"
             f"✅ {kept} осталось · ❌ {dropped} удалено\n"
         )
@@ -526,14 +527,14 @@ async def _show_session_details(message: Message, session_num: int):
     parts = sess["participants"]
 
     lines = [
-        f"📅 <b>{name}</b>",
+        f"📅 <b>{escape_html(name)}</b>",
         f"📆 {date} · 👥 {parts} участников\n",
     ]
 
     for t in tracks:
         icon = "✅" if t["vote_result"] == "keep" else "❌" if t["vote_result"] == "drop" else "⏳"
         track_display = format_track(t["title"], t["artist"], t["spotify_track_id"])
-        lines.append(f"{icon} {track_display} · 👤 {t['added_by']}")
+        lines.append(f"{icon} {track_display} · 👤 {escape_html(t['added_by'])}")
 
     kept = sum(1 for t in tracks if t["vote_result"] == "keep")
     dropped = sum(1 for t in tracks if t["vote_result"] == "drop")
@@ -575,8 +576,8 @@ async def cmd_join(message: Message):
     ]])
     await send(
         settings.telegram_admin_id,
-        f"🙋 <b>{html.escape(message.from_user.full_name)}</b> "
-        f"(@{html.escape(message.from_user.username or '—')}) хочет присоединиться. Пустить?",
+        f"🙋 <b>{escape_html(message.from_user.full_name)}</b> "
+        f"(@{escape_html(message.from_user.username or '—')}) хочет присоединиться. Пустить?",
         reply_markup=approve_kb,
     )
     await message.answer("⏳ Запрос отправлен ведущему. Жди подтверждения!")
@@ -643,7 +644,7 @@ async def cmd_secret(message: Message):
             "Напиши: <code>/secret твой секрет</code>"
         )
         if current:
-            msg += f"\n\n🔒 Твой текущий секрет: <i>{current}</i>"
+            msg += f"\n\n🔒 Твой текущий секрет: <i>{escape_html(current)}</i>"
 
         await reply(message, msg)
         return
@@ -666,7 +667,7 @@ async def cmd_secret(message: Message):
                 session_id, message.from_user.id, secret,
             )
 
-    await reply(message, f"🥚 Секрет сохранён!\n🔒 <i>{html.escape(secret)}</i>\n\n⏳ Анализирую треки...")
+    await reply(message, f"🥚 Секрет сохранён!\n🔒 <i>{escape_html(secret)}</i>\n\n⏳ Анализирую треки...")
 
     user_tracks = []
     if upcoming_pl:
@@ -715,7 +716,7 @@ async def on_secret_clarification(message: Message):
             updated_secret, info["session_id"], message.from_user.id,
         )
 
-    await reply(message, f"🥚 Секрет обновлён!\n🔒 <i>{html.escape(updated_secret)}</i>")
+    await reply(message, f"🥚 Секрет обновлён!\n🔒 <i>{escape_html(updated_secret)}</i>")
 
 
 # ── Auto duplicate check on Spotify link ───────────────────────
@@ -777,12 +778,12 @@ async def on_spotify_link(message: Message):
             if d.get("session_status") == "drop":
                 label = "❌ дропнут ранее"
             track_display = format_track(d["title"], d["artist"])
-            lines.append(f"  {label} — {track_display}\n  в {d['playlist']}")
-        parts.append(f"⚠️ <b>Дубликат!</b>\n" + "\n".join(lines))
+            lines.append(f"  {label} — {track_display}\n  в {escape_html(d['playlist'])}")
+        parts.append("⚠️ <b>Дубликат!</b>\n" + "\n".join(lines))
 
     if drops:
-        drop_lines = [f"  ❌ {d['playlist']} ({d['date']})" for d in drops]
-        parts.append(f"⚠️ <b>Ранее дропнут:</b>\n" + "\n".join(drop_lines))
+        drop_lines = [f"  ❌ {escape_html(d['playlist'])} ({escape_html(d['date'])})" for d in drops]
+        parts.append("⚠️ <b>Ранее дропнут:</b>\n" + "\n".join(drop_lines))
 
     if siblings:
         sib_lines = []
@@ -790,7 +791,7 @@ async def on_spotify_link(message: Message):
         for s in siblings[:5]:
             track_display = format_track(s["title"], s["artist"])
             arrow = kind_label.get(s["kind"], "версия")
-            sib_lines.append(f"  🔁 {arrow}: {track_display}\n  в {html.escape(s['playlist'])}")
+            sib_lines.append(f"  🔁 {arrow}: {track_display}\n  в {escape_html(s['playlist'])}")
         if len(siblings) > 5:
             sib_lines.append(f"  <i>…и ещё {len(siblings) - 5}</i>")
         parts.append("ℹ️ <b>Изменённая версия — не дубль, но имей в виду:</b>\n" + "\n".join(sib_lines))

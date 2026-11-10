@@ -16,8 +16,6 @@ _HTML_FORMAT_INSTRUCTION = (
     "НЕ используй Markdown (**, #, _, `). Только HTML теги."
 )
 
-_OPENAI_FALLBACK_MODEL = "gpt-4o"
-
 
 def _get_anthropic() -> anthropic.AsyncAnthropic:
     global _anthropic_client
@@ -34,11 +32,13 @@ def get_openai() -> AsyncOpenAI:
 
 
 async def _call_llm(system: str, user_content: str, max_tokens: int) -> tuple[str, str]:
-    """Call Anthropic Sonnet, fallback to GPT-4o on overload.
+    """Call Anthropic Sonnet; there is no fallback model.
+
+    Overload (529) or no key gives ("", "error"); other API errors, such as an empty credit
+    balance, raise.
 
     Returns (text, stop_reason). stop_reason is 'end_turn' for complete responses.
     """
-    # Try Anthropic first
     if settings.anthropic_api_key:
         try:
             client = _get_anthropic()
@@ -51,7 +51,7 @@ async def _call_llm(system: str, user_content: str, max_tokens: int) -> tuple[st
             return response.content[0].text.strip(), response.stop_reason
         except anthropic.APIStatusError as e:
             if e.status_code == 529:
-                log.warning(f"Anthropic overloaded (529), skipping")
+                log.warning("Anthropic overloaded (529), skipping")
                 return "", "error"
             else:
                 raise
@@ -60,8 +60,8 @@ async def _call_llm(system: str, user_content: str, max_tokens: int) -> tuple[st
 
 
 async def generate_track_facts(title: str, artist: str, album: str, release_date: str = "") -> str:
-    """Generate interesting facts about a track. Sonnet → GPT-4o fallback."""
-    if not settings.anthropic_api_key and not settings.openai_api_key:
+    """Generate interesting facts about a track with Sonnet; "" on any failure (see app.services.facts)."""
+    if not settings.anthropic_api_key:
         return ""
 
     date_hint = ""
@@ -109,7 +109,7 @@ async def generate_track_facts(title: str, artist: str, album: str, release_date
                            "к сожалению", "публично не задокументирована",
                            "информация ограничена", "данных недостаточно"]
         lines = facts.split("\n")
-        clean_lines = [l for l in lines if not any(m in l.lower() for m in _copout_markers)]
+        clean_lines = [line for line in lines if not any(m in line.lower() for m in _copout_markers)]
         facts = "\n".join(clean_lines).strip()
 
         if not facts:
@@ -160,7 +160,7 @@ async def generate_pre_recap_teaser(
     top_contributor: str | None = None,
 ) -> str:
     """Generate a teaser at session end — builds intrigue before recap."""
-    if not settings.anthropic_api_key and not settings.openai_api_key:
+    if not settings.anthropic_api_key:
         return f"🎧 Сегодня {total_tracks} треков. Чем всё закончится? Узнаем прямо сейчас!"
 
     system = (
@@ -199,7 +199,7 @@ _RECAP_BASE_SYSTEM = (
 
 async def _generate_recap_block(user_content: str, block_system: str) -> str:
     """Generate a single recap block via Sonnet."""
-    if not settings.anthropic_api_key and not settings.openai_api_key:
+    if not settings.anthropic_api_key:
         return ""
 
     try:
@@ -227,7 +227,7 @@ async def generate_session_recap_blocks(
     on_block_done(block_name) is called when each block finishes (for progress tracking).
     Returns dict with keys: genres, transitions, mimic, rebel, facts.
     """
-    if not settings.anthropic_api_key and not settings.openai_api_key:
+    if not settings.anthropic_api_key:
         return {}
 
     user_context = (

@@ -38,7 +38,7 @@ sequenceDiagram
         Spotify-->>Bot: New track detected
         Bot->>DB: INSERT session_tracks
         Bot->>Spotify: Get added_by from playlist
-        Bot->>DB: Get ai_facts from playlist_tracks
+        Bot->>DB: Get ai_facts from tracks
         Bot->>Users: Track card + Keep/Drop buttons
 
         loop Each participant votes

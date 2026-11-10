@@ -8,12 +8,12 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.config import settings
 from app.spotify.auth import get_spotify
 from app.spotify.monitor import SpotifyMonitor, TrackInfo
-from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next, create_session_track
+from app.services.voting import create_session_track
 from app.services.ai import generate_track_facts, generate_pre_recap_teaser
 from app.services.admin_commands import RecapProgress
 from app.services.genre_distributor import distribute_session_tracks
 from app.services.track_formatter import build_track_caption
-from app.utils import display_name
+from app.utils import display_name, escape_html
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class SessionManager:
         self.waiting_theme: bool = False
 
     async def get_participant_names(self) -> str:
-        """Get formatted list of participant names."""
+        """Participant names, escaped for the HTML session message."""
         from app.bot.core import get_pool as _get_pool
         names = []
         async with _get_pool().acquire() as conn:
@@ -50,8 +50,7 @@ class SessionManager:
                     "SELECT telegram_username, telegram_name FROM users WHERE telegram_id = $1", tid
                 )
                 if row:
-                    name = display_name(row["telegram_username"], row["telegram_name"])
-                    names.append(name)
+                    names.append(escape_html(display_name(row["telegram_username"], row["telegram_name"])))
                 else:
                     names.append(str(tid))
         return ", ".join(names) if names else "—"
@@ -74,7 +73,7 @@ class SessionManager:
             names = await self.get_participant_names()
             await edit_text(
                 chat_id, msg_id,
-                f"🎧 Сессия создана: <b>{playlist_name}</b>\n"
+                f"🎧 Сессия создана: <b>{escape_html(playlist_name)}</b>\n"
                 f"👥 Участников: {len(self.participants)} — {names}\n\n"
                 f"Жди пока все присоединятся, потом жми кнопку.",
                 reply_markup=start_kb,
@@ -187,9 +186,9 @@ class SessionManager:
                     added_by_name = display_name(row["telegram_username"], row["telegram_name"])
 
         if added_by_name:
-            added_by_text = f"\n👤 {added_by_name}"
+            added_by_text = f"\n👤 {escape_html(added_by_name)}"
         elif resolved_added_by:
-            added_by_text = f"\n👤 <code>{resolved_added_by}</code>"
+            added_by_text = f"\n👤 <code>{escape_html(resolved_added_by)}</code>"
         else:
             added_by_text = ""
 

@@ -1,9 +1,7 @@
 import logging
 
 import asyncpg
-import tekore as tk
 
-from app.config import settings
 from app.spotify.auth import get_spotify
 
 log = logging.getLogger(__name__)

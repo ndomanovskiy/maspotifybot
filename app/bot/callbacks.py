@@ -2,7 +2,6 @@
 recap carousel, playlist creation, join approval."""
 
 import asyncio
-import html
 import logging
 
 from aiogram import Router, F
@@ -14,7 +13,6 @@ from app.spotify.auth import get_spotify
 from app.services.voting import record_vote, remove_track_from_playlist, skip_to_next
 from app.services.playlists import create_next_playlist, forget_kept_duplicates, mark_duplicate_kept
 from app.services.ai import generate_track_facts
-from app.services.track_formatter import format_track
 from app.services.admin_commands import cmd_distribute_force, cmd_recap_regenerate, log_action
 from app.bot.core import (
     get_pool, is_admin, is_registered,
@@ -22,6 +20,7 @@ from app.bot.core import (
 )
 from app.bot.playlist_notify import handle_callback as handle_playlist_notify, offer_notification
 from app.bot.session_manager import session
+from app.utils import escape_html
 
 log = logging.getLogger(__name__)
 
@@ -312,15 +311,10 @@ async def on_regen_facts(callback: CallbackQuery):
         sp = await get_spotify()
         sp_track = await sp.track(track["spotify_track_id"])
         release_date = sp_track.album.release_date if hasattr(sp_track.album, "release_date") else ""
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"No release date for {track['spotify_track_id']}, generating without it: {e}")
 
-    async with get_pool().acquire() as conn:
-        await conn.execute(
-            "UPDATE tracks SET ai_facts = NULL WHERE spotify_track_id = $1",
-            track["spotify_track_id"],
-        )
-
+    # The old facts stay until new ones exist: hand-written facts must survive a failed generation
     facts = await generate_track_facts(track["title"], track["artist"], track["album"] or "", release_date=release_date or "")
 
     if facts:
@@ -337,7 +331,7 @@ async def on_regen_facts(callback: CallbackQuery):
                 except Exception as e:
                     log.debug(f"Failed to notify {chat_id}: {e}")
     else:
-        await callback.message.answer("❌ Не удалось сгенерировать факты.", parse_mode="HTML")
+        await callback.message.answer("❌ Не удалось сгенерировать факты, ничего не изменил.", parse_mode="HTML")
 
 
 # ── Approve/Deny join ──────────────────────────────────────────
@@ -405,8 +399,8 @@ async def on_join_session(callback: CallbackQuery):
     ]])
     await send(
         settings.telegram_admin_id,
-        f"🙋 <b>{html.escape(callback.from_user.full_name)}</b> "
-        f"(@{html.escape(callback.from_user.username or '—')}) хочет присоединиться. Пустить?",
+        f"🙋 <b>{escape_html(callback.from_user.full_name)}</b> "
+        f"(@{escape_html(callback.from_user.username or '—')}) хочет присоединиться. Пустить?",
         reply_markup=approve_kb,
     )
     await _close_question(callback, "⏳ Запрос отправлен, жди подтверждения...")
@@ -450,7 +444,7 @@ async def on_create_playlist(callback: CallbackQuery):
             )
 
         text = (
-            f"✅ <b>Создан: {html.escape(result['name'])}</b>\n\n{result['url']}"
+            f"✅ <b>Создан: {escape_html(result['name'])}</b>\n\n{escape_html(result['url'] or '')}"
         )
         await callback.message.edit_text(text, parse_mode="HTML")
         await offer_notification(result)

@@ -416,6 +416,21 @@ class TestClosePlaylist:
         assert "01/04/2026" in pl["name"]
         mock_spotify.playlist_change_details.assert_called_once()
 
+    @patch("app.services.admin_commands.get_spotify")
+    def test_close_message_escapes_playlist_names(self, mock_sp, admin_store, admin_pool):
+        from app.services.admin_commands import cmd_close_playlist
+
+        mock_sp.return_value = AsyncMock()
+        admin_store.add_playlist(number=91, spotify_id="sp_91",
+                                 name="TURDOM#91 18/03/2026 <3", status="upcoming")
+        admin_store.add_session(
+            playlist_spotify_id="sp_91", playlist_name="TURDOM#91 18/03/2026 <3",
+            ended_at=datetime(2026, 4, 1, 12, 52, tzinfo=timezone.utc),
+        )
+        result = run(cmd_close_playlist(admin_pool, 91))
+        assert "&lt;3" in result["message"]
+        assert "<3" not in result["message"]
+
 
 # ---------------------------------------------------------------------------
 # /create_next

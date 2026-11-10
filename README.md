@@ -13,7 +13,7 @@ Telegram bot for **TURDOM** music sessions — weekly Discord calls where a grou
 ## Features
 
 - **Live voting** — keep/drop voting with adaptive threshold (ceil 50% of participants)
-- **AI track facts** — interesting facts generated via GPT-4o-mini (cached + realtime)
+- **AI track facts** — interesting facts generated via Claude Sonnet (cached + realtime), or written by hand when the AI is unavailable
 - **Duplicate detection** — auto-detect by Spotify Track ID and ISRC, auto-remove
 - **Genre playlists** — 11 genre sub-playlists, auto-distribute kept tracks after session
 - **Session recap** — AI-generated session summary
@@ -25,9 +25,8 @@ Telegram bot for **TURDOM** music sessions — weekly Discord calls where a grou
 
 - **Python 3.12**, aiogram 3, tekore (async Spotify API)
 - **PostgreSQL 16** (asyncpg)
-- **OpenAI GPT-4o-mini** — track facts, session recap
-- **Docker Compose** — bot + db
-- **GitHub Actions** — CI/CD (pytest → SSH deploy)
+- **Claude Sonnet** — track facts, session recap; **OpenAI GPT-4o-mini** — genres
+- **Docker Compose** — bot + db, run locally on the owner's PC
 
 ## Commands
 
@@ -40,7 +39,7 @@ Telegram bot for **TURDOM** music sessions — weekly Discord calls where a grou
 | `/check <url>` | Check track for duplicates |
 | `/join` | Join active session |
 | `/leave` | Leave session |
-| `/session <url>` | Start session (admin) |
+| `/session start` | Start session for the upcoming playlist (admin) |
 | `/end` | End session (admin) |
 | `/kick @username` | Kick participant (admin) |
 | `/scan` | Force duplicate check (admin) |
@@ -64,16 +63,17 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-179 tests: voting logic, session flow, race conditions, caption limits, genre classification, duplicate watcher, access control, stats, history, leave/kick.
+Tests cover voting logic, session flow, race conditions, caption limits, genre classification, the duplicate watcher, HTML escaping, hand-written facts, access control, stats, history, leave/kick.
 
 ## Architecture
 
 ```
 app/
-  bot/handlers.py        — Telegram commands and callbacks
+  bot/                   — Telegram layer: user and admin commands, callbacks, session manager, message texts
   services/
     voting.py            — voting and threshold logic
-    ai.py                — track facts and recap generation
+    ai.py                — track facts and recap generation (Claude)
+    facts.py             — hand-written track facts when the AI is unavailable
     duplicate_watcher.py — background duplicate check + AI facts
     genre_distributor.py — genre classification and distribution
     playlists.py         — playlist management
@@ -87,7 +87,7 @@ scripts/
 
 ## Deploy
 
-Pushes to `main` trigger GitHub Actions → pytest → SSH → `docker compose up -d --build`.
+The bot runs in Docker Compose on the owner's PC: `docker compose up -d --build bot`. There is no CI deploy.
 
 ## License
 
@@ -106,7 +106,7 @@ Telegram-бот для музыкальных сессий **TURDOM** — еже
 ## Возможности
 
 - **Live-голосование** — keep/drop с адаптивным порогом (ceil 50% участников)
-- **AI-факты о треках** — генерация через GPT-4o-mini (кэш + realtime)
+- **AI-факты о треках** — генерация через Claude Sonnet (кэш + realtime) или вручную, когда AI недоступен
 - **Обнаружение дубликатов** — по Spotify Track ID и ISRC, авто-удаление
 - **Жанровые плейлисты** — 11 саб-плейлистов, автораспределение kept-треков после сессии
 - **Рекап сессии** — AI-генерация итогов
@@ -118,9 +118,8 @@ Telegram-бот для музыкальных сессий **TURDOM** — еже
 
 - **Python 3.12**, aiogram 3, tekore (async Spotify API)
 - **PostgreSQL 16** (asyncpg)
-- **OpenAI GPT-4o-mini** — факты о треках, рекап сессии
-- **Docker Compose** — bot + db
-- **GitHub Actions** — CI/CD (pytest → SSH деплой)
+- **Claude Sonnet** — факты о треках, рекап сессии; **OpenAI GPT-4o-mini** — жанры
+- **Docker Compose** — bot + db, локально на компьютере владельца
 
 ## Команды
 
@@ -133,7 +132,7 @@ Telegram-бот для музыкальных сессий **TURDOM** — еже
 | `/check <url>` | Проверить трек на дубликат |
 | `/join` | Присоединиться к сессии |
 | `/leave` | Выйти из сессии |
-| `/session <url>` | Начать сессию (админ) |
+| `/session start` | Начать сессию по предстоящему плейлисту (админ) |
 | `/end` | Завершить сессию (админ) |
 | `/kick @username` | Кикнуть участника (админ) |
 | `/scan` | Принудительная проверка дубликатов (админ) |
@@ -157,16 +156,17 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-179 тестов: логика голосования, session flow, race conditions, лимиты caption, жанровая классификация, duplicate watcher, access control, статистика, история, leave/kick.
+Тесты покрывают логику голосования, session flow, race conditions, лимиты caption, жанровую классификацию, duplicate watcher, экранирование HTML, ручные факты, access control, статистику, историю, leave/kick.
 
 ## Архитектура
 
 ```
 app/
-  bot/handlers.py        — Telegram-команды и callbacks
+  bot/                   — Telegram-слой: команды пользователей и админа, callbacks, session manager, тексты сообщений
   services/
     voting.py            — голосование и threshold
-    ai.py                — генерация фактов и рекапов
+    ai.py                — генерация фактов и рекапов (Claude)
+    facts.py             — ручные факты, когда AI недоступен
     duplicate_watcher.py — фоновая проверка дубликатов + AI-факты
     genre_distributor.py — классификация и распределение по жанрам
     playlists.py         — управление плейлистами
@@ -180,7 +180,7 @@ scripts/
 
 ## Деплой
 
-Push в `main` → GitHub Actions → pytest → SSH → `docker compose up -d --build`.
+Бот работает в Docker Compose на компьютере владельца: `docker compose up -d --build bot`. Автодеплоя нет.
 
 ## Лицензия
 

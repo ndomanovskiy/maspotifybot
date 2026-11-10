@@ -41,6 +41,10 @@ class FakeConnection:
     async def execute(self, query: str, *args):
         return self._store.handle_execute(query, args)
 
+    def transaction(self):
+        """No rollback in the fake: the store has no partial-failure tests."""
+        return FakePoolContext(self)
+
 
 class FakePoolContext:
     def __init__(self, conn: FakeConnection):
@@ -187,6 +191,16 @@ class FakeStore:
     def handle_fetch(self, query: str, args: tuple) -> list[FakeRecord]:
         q = query.strip().lower()
 
+        # facts.pending_tracks: tracks of one playlist that have no facts yet
+        if "pt.playlist_id = $1" in q and "ai_facts is null" in q:
+            rows = []
+            for pt in self.playlist_tracks:
+                if pt["playlist_id"] == args[0]:
+                    track = next(t for t in self.tracks if t["id"] == pt["track_id"])
+                    if track["ai_facts"] is None:
+                        rows.append(FakeRecord({k: track[k] for k in ("spotify_track_id", "title", "artist", "album")}))
+            return rows
+
         if "from playlists" in q and "status in" in q:
             return [FakeRecord(p) for p in self.playlists if p["status"] in ("active", "upcoming")]
 
@@ -299,6 +313,13 @@ class FakeStore:
 
         if "select id from playlists where spotify_id = $1" in q:
             return next((p["id"] for p in self.playlists if p["spotify_id"] == args[0]), None)
+
+        if "select id from playlists where number = $1" in q:  # newest playlist with that number
+            ids = [p["id"] for p in self.playlists if p["number"] == args[0]]
+            return max(ids) if ids else None
+
+        if "select id from tracks where spotify_track_id = $1" in q:
+            return next((t["id"] for t in self.tracks if t["spotify_track_id"] == args[0]), None)
 
         if "select exists" in q and "users" in q:
             tid = args[0]

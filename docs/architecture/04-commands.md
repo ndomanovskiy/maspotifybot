@@ -44,7 +44,7 @@
 |---------|-------------|
 | `/import <playlist_url>` | Import single playlist to DB |
 | `/import_all` | Import all TURDOM playlists from Spotify account |
-| `/scan` | Force duplicate scan on active/upcoming playlists; skips tracks kept with «Оставить» in that playlist |
+| `/scan` | Force duplicate scan on active/upcoming playlists; skips thematic playlists and tracks kept with «Оставить» in that playlist |
 | `/reschedule <DD/MM/YYYY>` | Change upcoming playlist date |
 | `/backfill_genres` | Backfill missing genres for all tracks |
 | `/preview <track>` | Preview track card rendering |
@@ -70,7 +70,7 @@
 | `redistribute:<N>` | Already distributed | Force re-distribute |
 | `redistribute:cancel` | Already distributed | Cancel |
 | `rerecap:<N>` | Recap exists | Regenerate recap |
-| `regen_facts:<track_id>` | Track card (admin) | Regenerate AI facts |
+| `regen_facts:<session_track_id>` | Track card (admin) | Regenerate AI facts; the old facts stay if generation fails |
 | `recap_page:<N>:<page>` | Recap carousel | Navigate recap pages |
 | `noop` | Recap page counter | No action |
 | `history:<offset>` | History pagination | Navigate pages |

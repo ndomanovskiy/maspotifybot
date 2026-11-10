@@ -10,6 +10,7 @@ graph TB
         SM["session_manager.py<br/>Session state"]
         CB["callbacks.py<br/>Callback handlers"]
         PN["playlist_notify.py<br/>New playlist picker"]
+        DM["duplicate_messages.py<br/>Duplicate-check texts"]
         subgraph Commands["commands/"]
             USR["user.py<br/>User commands"]
             ADM["admin.py<br/>Admin commands"]
@@ -24,6 +25,7 @@ graph TB
         GR[genre_resolver.py]
         AI[ai.py]
         DW[duplicate_watcher.py]
+        FA[facts.py]
     end
 
     subgraph Spotify["Spotify Layer"]
@@ -52,6 +54,8 @@ graph TB
     ADM --> P
     ADM --> GD
     ADM --> DW
+    INIT --> DM
+    INIT --> DW
 
     AC --> GD
     AC --> P
@@ -80,6 +84,7 @@ graph TB
 
     POOL --> DB
     SCH --> DB
+    FA --> DB
 ```
 
 ## Module Details
@@ -88,13 +93,14 @@ graph TB
 
 | File | Lines | Responsibility |
 |------|-------|----------------|
-| `app/bot/__init__.py` | 252 | Router wiring, `setup_bot()` |
-| `app/bot/core.py` | 138 | `bot`, `dp`, `pool`, `is_admin`, `is_registered`, `extract_spotify_id`, decorators (`@require_admin`, `@require_registered`, `@require_admin_callback`), message helpers (`send`, `reply`, `send_photo`, `reply_photo`, `edit_text`, `edit_caption`), `safe_int`, `parse_turdom_number` |
-| `app/bot/session_manager.py` | 535 | `SessionManager` singleton: all session state, `on_track_change`, `end_session`, `check_session_complete`, `finalize_track_card`, `update_vote_buttons`, `recover`, `send_recap_carousel`, `cache_pre_recap_teaser` |
-| `app/bot/callbacks.py` | 649 | All `callback_query` handlers: voting, skip, regen_facts, approve/deny, session control, recap carousel, playlist creation, history pagination, duplicate «Удалить»/«Оставить» |
+| `app/bot/__init__.py` | 187 | Router wiring, `setup_bot()` |
+| `app/bot/core.py` | 151 | `bot`, `dp`, `pool`, `is_admin`, `is_registered`, `extract_spotify_id`, decorators (`@require_admin`, `@require_registered`, `@require_admin_callback`), message helpers (`send`, `reply`, `send_photo`, `reply_photo`, `edit_text`, `edit_caption`), `safe_int`, `parse_turdom_number` |
+| `app/bot/session_manager.py` | 695 | `SessionManager` singleton: all session state, `on_track_change`, `end_session`, `check_session_complete`, `finalize_track_card`, `update_vote_buttons`, `recover`, `send_recap_carousel`, `cache_pre_recap_teaser` |
+| `app/bot/callbacks.py` | 643 | All `callback_query` handlers: voting, skip, regen_facts, approve/deny, session control, recap carousel, playlist creation, history pagination, duplicate «Удалить»/«Оставить» |
 | `app/bot/playlist_notify.py` | — | Admin picker for who gets notified about a new playlist: `offer_notification`, `handle_callback` |
-| `app/bot/commands/user.py` | 798 | `/start`, `/reg`, `/next`, `/get`, `/genres`, `/check`, `/stats`, `/mystats`, `/history`, `/join`, `/leave`, `/secret` |
-| `app/bot/commands/admin.py` | 747 | `/auth`, `/session`, `/preview`, `/reschedule`, `/scan`, `/import`, `/import_all`, `/distribute`, `/recap`, `/close_playlist`, `/create_next`, `/health`, `/dbinfo`, `/backfill_genres` |
+| `app/bot/duplicate_messages.py` | 118 | Texts of the duplicate-check messages (auto-removed, possible duplicate, dropped before, modified version); escapes every name |
+| `app/bot/commands/user.py` | 799 | `/start`, `/reg`, `/next`, `/get`, `/genres`, `/check`, `/stats`, `/mystats`, `/history`, `/join`, `/leave`, `/secret` |
+| `app/bot/commands/admin.py` | 757 | `/auth`, `/session`, `/preview`, `/reschedule`, `/scan`, `/import`, `/import_all`, `/distribute`, `/recap`, `/close_playlist`, `/create_next`, `/health`, `/dbinfo`, `/backfill_genres` |
 | `app/config.py` | — | Pydantic settings (env vars) |
 | `app/main.py` | — | Entry point, pool + schema init |
 
@@ -107,7 +113,8 @@ graph TB
 | `app/services/admin_commands.py` | Post-session commands: distribute, recap, close, create_next, dbinfo | genre_distributor.py, playlists.py, ai.py, pool |
 | `app/services/genre_distributor.py` | Genre classification (GENRE_MAP), distribute tracks to genre playlists | auth.py, pool |
 | `app/services/genre_resolver.py` | Resolve track genre via Spotify artist API, backfill | auth.py, pool |
-| `app/services/ai.py` | OpenAI: track facts, recap, teaser | openai |
+| `app/services/ai.py` | Claude Sonnet: track facts, recap, teaser (no fallback); OpenAI client for genres | anthropic, openai |
+| `app/services/facts.py` | Hand-written track facts: list tracks without facts, check Telegram HTML, save (CLI: `python -m app.services.facts`) | asyncpg (own pool for the CLI) |
 | `app/services/duplicate_watcher.py` | Background: poll playlists, detect duplicates, auto-remove, generate AI facts | playlists.py, ai.py, genre_resolver.py, auth.py, pool |
 
 ### Spotify Layer
@@ -122,7 +129,7 @@ graph TB
 | File | Responsibility |
 |------|----------------|
 | `app/db/pool.py` | asyncpg connection pool (min=2, max=5) |
-| `app/db/schema.py` | Table definitions, versioned migrations via `schema_version` table (32 migrations) |
+| `app/db/schema.py` | Table definitions, versioned migrations via `schema_version` table (70 migrations) |
 
 ## In-Memory State (SessionManager)
 

@@ -1,7 +1,6 @@
 """Bot package — wires routers and provides setup_bot entry point."""
 
 import asyncio
-import html
 import logging
 
 from aiogram.types import Message, BotCommand, BotCommandScopeChat
@@ -9,25 +8,19 @@ from aiogram.types import Message, BotCommand, BotCommandScopeChat
 from app.config import settings
 from app.spotify.auth import load_token_from_db
 from app.services.duplicate_watcher import DuplicateWatcher
-from app.services.track_formatter import format_track
 
 from app.bot.core import bot, dp, set_pool, is_admin, send, reply
+from app.bot.duplicate_messages import (
+    auto_removed_text, dropped_before_text, possible_duplicate_text, sibling_text,
+)
 from app.bot.playlist_notify import offer_notification
 from app.bot.session_manager import session
 from app.bot.commands.user import router as user_router
 from app.bot.commands.admin import router as admin_router, set_duplicate_notify, set_fuzzy_confirm, init_health
 from app.bot.callbacks import router as callbacks_router, keep_duplicate_button, remove_duplicate_button
+from app.utils import escape_html
 
 log = logging.getLogger(__name__)
-
-# How a duplicate notification names each kind of match from check_duplicate
-MATCH_LABELS = {
-    "fuzzy_exact": "🔍 нормализованное совпадение",
-    "fuzzy_contains": "🔍 слова совпадают",
-    "fuzzy_levenshtein": "🔍 похожее название",
-    "exact": "🎯 точное",
-    "isrc": "🔗 ISRC",
-}
 
 # Register routers
 dp.include_router(user_router)
@@ -61,7 +54,7 @@ async def on_theme_input(message: Message):
             )
 
         text = (
-            f"✅ <b>Создан: {html.escape(result['name'])}</b>\n\n{result['url']}\n\n"
+            f"✅ <b>Создан: {escape_html(result['name'])}</b>\n\n{escape_html(result['url'] or '')}\n\n"
             f"📎 Совместный доступ включён автоматически."
         )
         await reply(message, text)
@@ -118,20 +111,12 @@ async def setup_bot(pool):
 
     # Start duplicate watcher
     async def on_duplicate_found(telegram_id, track_title, artist, duplicates, playlist_name, track_id=None, added_by_name=None):
-        dup_links = []
-        for d in duplicates:
-            match_type = MATCH_LABELS.get(d["match"], "🔍 похож")
-            dup_links.append(f"  {match_type} — <a href=\"{d['url']}\">{d['playlist']}</a>")
-        dup_text = "\n".join(dup_links)
-
-        track_fmt = format_track(track_title, artist, track_id)
-
         async with pool.acquire() as conn:
             pl_row = await conn.fetchrow("SELECT url FROM playlists WHERE name = $1", playlist_name)
-        removed_from = f"<a href=\"{pl_row['url']}\">{playlist_name}</a>" if pl_row and pl_row["url"] else playlist_name
-
-        added_line = f"\n👤 Добавил: {html.escape(added_by_name)}" if added_by_name else ""
-        msg = f"🗑 <b>Дубликат удалён!</b>\n\n🎵 {track_fmt}{added_line}\nУдалён из: {removed_from}\n\nУже был:\n{dup_text}"
+        msg = auto_removed_text(
+            track_title, artist, track_id, duplicates,
+            playlist_name=playlist_name, playlist_url=pl_row["url"] if pl_row else None, added_by_name=added_by_name,
+        )
 
         if telegram_id:
             try:
@@ -148,31 +133,7 @@ async def setup_bot(pool):
         """Ask user to confirm fuzzy duplicate — show buttons."""
         from aiogram.types import InlineKeyboardMarkup
 
-        dup_links = []
-        for d in duplicates:
-            label = MATCH_LABELS.get(d["match"], "🔍 похож")
-            if d.get("session_status") == "drop":
-                label = "❌ дропнут ранее"
-            dup_links.append(f"  {label} — <a href=\"{d['url']}\">{d['playlist']}</a>\n  {d['title']} — {d['artist']}")
-        dup_text = "\n".join(dup_links)
-
-        track_fmt = format_track(track_title, artist, track_id)
-        track_url = f"https://open.spotify.com/track/{track_id}" if track_id else ""
-
-        added_line = f"\n👤 Добавил: {html.escape(added_by_name)}" if added_by_name else ""
-        all_dropped = all(d.get("session_status") == "drop" for d in duplicates)
-        if all_dropped:
-            header = "🔄 <b>Второй шанс?</b>"
-            footer = "Этот трек уже дропали. Оставить?"
-        else:
-            header = "🔍 <b>Возможный дубликат</b>"
-            footer = "Удалить трек из плейлиста?"
-        msg = (
-            f"{header}\n\n"
-            f"🎵 {track_fmt}{added_line}\nв <b>{playlist_name}</b>\n\n"
-            f"Похож на:\n{dup_text}\n\n"
-            f"{footer}"
-        )
+        msg = possible_duplicate_text(track_title, artist, track_id, duplicates, playlist_name, added_by_name)
 
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             remove_duplicate_button(playlist_spotify_id, track_id, "🗑 Удалить"),
@@ -189,16 +150,7 @@ async def setup_bot(pool):
         """Warn that a track was previously dropped."""
         from aiogram.types import InlineKeyboardMarkup
 
-        track_fmt = format_track(track_title, artist, track_id)
-        drop_lines = [f"  ❌ {d['playlist']} ({d['date']}) — добавил {d['added_by']}" for d in drops]
-        drop_text = "\n".join(drop_lines)
-
-        msg = (
-            f"⚠️ <b>Ранее дропнутый трек!</b>\n\n"
-            f"🎵 {track_fmt}\nДобавлен в <b>{playlist_name}</b>\n\n"
-            f"Был дропнут:\n{drop_text}\n\n"
-            f"Оставить или убрать?"
-        )
+        msg = dropped_before_text(track_title, artist, track_id, drops, playlist_name)
 
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             keep_duplicate_button(playlist_spotify_id, track_id),
@@ -213,24 +165,7 @@ async def setup_bot(pool):
 
     async def on_sibling_warn(telegram_id, track_title, artist, siblings, playlist_name, track_id, playlist_spotify_id):
         """Inform that a modified version (remix/sped up/etc) of an existing track was added — informational only."""
-        track_fmt = format_track(track_title, artist, track_id)
-        sib_lines = []
-        kind_label = {"self": "это версия", "other": "уже есть версия", "both": "обе — версии"}
-        for s in siblings[:5]:
-            arrow = kind_label.get(s["kind"], "версия")
-            sib_lines.append(
-                f"  🔁 {arrow}: {html.escape(s['title'])} — {html.escape(s['artist'])} "
-                f"<i>в {html.escape(s['playlist'])}</i>"
-            )
-        if len(siblings) > 5:
-            sib_lines.append(f"  <i>…и ещё {len(siblings) - 5}</i>")
-        sib_text = "\n".join(sib_lines)
-
-        msg = (
-            f"ℹ️ <b>Изменённая версия — не дубль</b>\n\n"
-            f"🎵 {track_fmt}\nДобавлен в <b>{html.escape(playlist_name)}</b>\n\n"
-            f"{sib_text}"
-        )
+        msg = sibling_text(track_title, artist, track_id, siblings, playlist_name)
         target = telegram_id or settings.telegram_admin_id
         try:
             await send(target, msg)

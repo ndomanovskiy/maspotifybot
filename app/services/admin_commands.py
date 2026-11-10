@@ -4,7 +4,6 @@ All commands use TURDOM playlist number (e.g. 91) as identifier.
 Actions are logged to action_log table.
 Times displayed in MSK (UTC+3).
 """
-import html
 import json
 import logging
 import math
@@ -17,6 +16,7 @@ from app.services.ai import generate_session_recap_blocks
 from app.services.genre_distributor import distribute_session_tracks
 from app.services.playlists import create_next_playlist
 from app.spotify.auth import get_spotify
+from app.utils import escape_html
 
 log = logging.getLogger(__name__)
 
@@ -288,6 +288,20 @@ class RecapProgress:
         return f"🤖 {bar} {self.completed}/{self.total}\n{self.stage}"
 
 
+def _user_stats_lines(user_stats: dict[str, dict]) -> list[str]:
+    """Recap lines "name — kept из total", most kept first; names are escaped."""
+    return [
+        f"   {escape_html(name)} — {s['kept']} из {s['total']}"
+        for name, s in sorted(user_stats.items(), key=lambda x: -x[1]["kept"])
+    ]
+
+
+def _easter_egg_message(name: str, secret: str, ai_text: str) -> str:
+    """Recap message for one participant's secret: the AI's HTML, or the secret itself as text."""
+    body = ai_text or f"<i>{escape_html(secret)}</i>"
+    return f"🥚 <b>Пасхалка от {escape_html(name)}</b>\n\n{body}"
+
+
 async def _generate_and_save_recap(
     pool: asyncpg.Pool, session_id: int, turdom_number: int, triggered_by: int | None,
     progress: RecapProgress | None = None,
@@ -429,8 +443,7 @@ async def _generate_and_save_recap(
     lines.append(f"🎵 {_plural_tracks(kept)} осталось, {dropped} удалили из {total}\n")
 
     lines.append("👤 <b>Статистика:</b>")
-    for name, s in sorted(user_stats.items(), key=lambda x: -x[1]["kept"]):
-        lines.append(f"   {name} — {s['kept']} из {s['total']}")
+    lines.extend(_user_stats_lines(user_stats))
 
     stats_block = "\n".join(lines)
 
@@ -466,7 +479,9 @@ async def _generate_and_save_recap(
         if ai_blocks.get("genres"):
             genre_msg += ai_blocks["genres"]
         if genre_counts:
-            genre_str = " · ".join(f"{g} {c}" for g, c in sorted(genre_counts.items(), key=lambda x: -x[1]))
+            genre_str = " · ".join(
+                f"{escape_html(g)} {c}" for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])
+            )
             genre_msg += f"\n\n📋 <b>Все жанры:</b> {genre_str}"
         messages.append(genre_msg)
 
@@ -490,19 +505,19 @@ async def _generate_and_save_recap(
         fire_lines = ["🔥 <b>Бенгеры</b>\n"]
         for i, r in enumerate(bangers[:15], 1):
             fire_lines.append(
-                f"{i}. {html.escape(r['title'])} — {html.escape(r['artist'])} ({r['fire_count']} 🔥)"
+                f"{i}. {escape_html(r['title'])} — {escape_html(r['artist'])} ({r['fire_count']} 🔥)"
             )
         if len(bangers) > 15:
             fire_lines.append(f"   <i>…и ещё {len(bangers) - 15}</i>")
         if fire_by_user:
             fire_lines.append("\n<b>🔥 огня раздавал:</b>")
             for r in fire_by_user[:10]:
-                fire_lines.append(f"   {html.escape(r['name'])} — {r['count']}")
+                fire_lines.append(f"   {escape_html(r['name'])} — {r['count']}")
         messages.append("\n".join(fire_lines))
 
     # Easter eggs — one block per person with their own AI analysis
     if easter_eggs:
-        from app.services.ai import _generate_recap_block, _RECAP_BASE_SYSTEM
+        from app.services.ai import _generate_recap_block
         import asyncio
 
         if progress:
@@ -537,10 +552,8 @@ async def _generate_and_save_recap(
         )
 
         for (name, secret), result in zip(easter_eggs.items(), egg_results):
-            if isinstance(result, Exception) or not result:
-                messages.append(f"🥚 <b>Пасхалка от {name}</b>\n\n<i>{secret}</i>")
-            else:
-                messages.append(f"🥚 <b>Пасхалка от {name}</b>\n\n{result}")
+            ai_text = "" if isinstance(result, Exception) else result
+            messages.append(_easter_egg_message(name, secret, ai_text))
 
     # Save combined for DB (joined with separator)
     recap_text = "\n\n---\n\n".join(messages)
@@ -613,9 +626,9 @@ async def cmd_close_playlist(pool: asyncpg.Pool, turdom_number: int, triggered_b
 
     msg = f"✅ TURDOM#{turdom_number} закрыт.\n"
     if old_name != new_name:
-        msg += f"📅 Переименован: {old_name} → {new_name}"
+        msg += f"📅 Переименован: {escape_html(old_name)} → {escape_html(new_name)}"
     else:
-        msg += f"📅 Дата уже актуальна: {new_name}"
+        msg += f"📅 Дата уже актуальна: {escape_html(new_name)}"
 
     return {"status": "ok", "message": msg}
 
@@ -648,8 +661,8 @@ async def cmd_create_next(pool: asyncpg.Pool, theme: str | None = None, triggere
     return {
         "status": "ok",
         "message": (
-            f"✅ Создан: {html.escape(result['name'])}\n\n"
-            f"{result['url']}\n\n"
+            f"✅ Создан: {escape_html(result['name'])}\n\n"
+            f"{escape_html(result['url'] or '')}\n\n"
             f"📎 Ссылка для участников — совместный доступ включён автоматически."
         ),
         "playlist": result,
@@ -696,7 +709,7 @@ async def cmd_dbinfo(pool: asyncpg.Pool) -> str:
         dist = "✅" if s["distributed_at"] else "❌"
         recap = "✅" if s["has_recap"] else "❌"
         lines.append(
-            f"  #{s['id']} {s['playlist_name']} — {s['status']}\n"
+            f"  #{s['id']} {escape_html(s['playlist_name'])} — {s['status']}\n"
             f"    📅 {to_msk(s['started_at'])} → {to_msk(s['ended_at'])}\n"
             f"    🎵 {s['total_tracks']} треков ({s['kept']} kept / {s['dropped']} dropped)\n"
             f"    Distribute: {dist} | Recap: {recap}"
@@ -706,7 +719,7 @@ async def cmd_dbinfo(pool: asyncpg.Pool) -> str:
     if open_pls:
         lines.append("\n<b>Открытые плейлисты:</b>")
         for pl in open_pls:
-            lines.append(f"  🟡 {pl['name']} ({pl['status']})")
+            lines.append(f"  🟡 {escape_html(pl['name'])} ({pl['status']})")
     else:
         lines.append("\n<b>Открытые плейлисты:</b> нет")
 
