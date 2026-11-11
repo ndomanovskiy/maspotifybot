@@ -179,4 +179,4 @@ erDiagram
 - `votes` unique constraint: `(session_track_id, telegram_id)` — one vote per user per track
 - `session_tracks` ↔ `playlist_tracks` joined via `spotify_track_id` — used in distribute to get genre
 - `genre` column added via migration v2, backfilled via `genre_resolver.py`
-- `tracks.genre_approved` is TRUE when a person picked the genre in the genre question; `/backfill_genres reset` keeps those genres
+- `tracks.genre_approved` is TRUE when a person picked the genre in the genre question; `/backfill_genres reset` keeps those genres. A pick replaces a genre the bot found, never a pick already made

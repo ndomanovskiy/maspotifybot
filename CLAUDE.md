@@ -5,7 +5,7 @@ Collaborative music listening Telegram bot for TURDOM community. Users add track
 ## Stack
 
 - **Python 3.12**, aiogram v3 (Telegram), tekore (Spotify async), asyncpg (PostgreSQL)
-- **AI:** Claude Sonnet for track facts, session recap commentary and easter egg analysis, with no fallback: when the Anthropic call fails, those AI-written parts come out empty (the recap still sends its stats, the teaser has a fixed text). Genres: Claude decides with what Last.fm tags and the Deezer release genre found (without Claude the first of them that knew decides); when none knows, the bot asks whoever added the track. The bot does not use OpenAI.
+- **AI:** Claude Sonnet for track facts, session recap commentary and easter egg analysis, with no fallback: when the Anthropic call fails, those AI-written parts come out empty (the recap still sends its stats, the teaser has a fixed text). Genres: Claude decides with what Last.fm tags and the Deezer release genre found (without Claude they decide when they agree); when none knows, or they disagree without Claude, the bot asks whoever added the track, and on a disagreement the track keeps the first source's genre meanwhile (if it could be saved). Backfill and playlist import ask nobody: there the first source settles a disagreement. The bot does not use OpenAI.
 - **Deploy:** local Docker on the owner's PC since 2026-09-30 (`docker compose up -d --build bot`). Spotify traffic exits through the host's Clash Verge.
 
 ## Project Structure
@@ -21,7 +21,7 @@ app/
 │   ├── session_manager.py  — SessionManager singleton (all session state)
 │   ├── callbacks.py        — Callback query handlers
 │   ├── playlist_notify.py  — Admin picker of who to notify about a new playlist
-│   ├── genre_question.py   — Asks whoever added a track for its genre when nobody knows it
+│   ├── genre_question.py   — Asks whoever added a track for its genre when nobody knows it or the sources disagree
 │   ├── duplicate_messages.py — Texts of the duplicate-check messages (escaped HTML)
 │   └── commands/
 │       ├── user.py         — User commands (/start, /join, /stats, etc.)
@@ -74,7 +74,7 @@ Never use bare `except Exception: pass`. Always log: `except Exception as e: log
 | `app/bot/commands/admin.py` | 758 | Admin commands |
 | `app/bot/callbacks.py` | 654 | All callback handlers |
 | `app/bot/playlist_notify.py` | 193 | New playlist notification picker |
-| `app/bot/genre_question.py` | 194 | Genre question to whoever added a track |
+| `app/bot/genre_question.py` | 239 | Genre question to whoever added a track |
 | `app/bot/duplicate_messages.py` | 118 | Duplicate-check message texts |
 | `app/services/facts.py` | 184 | Hand-written track facts: check and save |
 | `app/services/admin_commands.py` | 737 | Distribute, recap, close, create_next |

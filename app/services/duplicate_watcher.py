@@ -10,12 +10,19 @@ from app.services.playlists import (
     get_kept_track_ids, get_track_isrc,
 )
 from app.services.ai import generate_track_facts
-from app.services.genre_resolver import resolve_and_save_genre
+from app.services.genre_resolver import GenreDisputed, resolve_and_save_genre
 from app.services.genre_distributor import check_previously_dropped
 from app.services.normalize import normalize_title, normalize_artist, base_title
 from app.utils import display_name
 
 log = logging.getLogger(__name__)
+
+
+def _log_nobody_asked(track, dispute: GenreDisputed | None, reason: str) -> None:
+    """Log that nobody is asked about a track's genre, the genre it keeps meanwhile, and why."""
+    what = "Sources disagree on the genre of" if dispute is not None else "No genre for"
+    kept = f", it keeps {dispute.kept}" if dispute is not None and dispute.kept else ""
+    log.info(f"{what} '{track.name}' and nobody is asked{kept}: {reason}")
 
 
 class DuplicateWatcher:
@@ -95,14 +102,17 @@ class DuplicateWatcher:
         return None, None
 
     async def _ask_genre(self, added_by: str | None, track_db_id: int, track, track_artist: str,
-                         playlist_name: str) -> None:
-        """Ask whoever added the track for its genre. Nobody else is asked."""
+                         playlist_name: str, dispute: GenreDisputed | None = None) -> None:
+        """Ask whoever added the track for its genre; nobody else is asked.
+
+        The question offers every genre, or with a `dispute` only those the sources named.
+        """
         if not self._genre_ask:
             return
         try:
             telegram_id = await self._resolve_telegram_id(added_by)
             if telegram_id is None:
-                log.info(f"No genre for '{track.name}' and nobody to ask: added by {added_by or 'unknown'}")
+                _log_nobody_asked(track, dispute, f"added by {added_by or 'unknown'}")
                 return
             await self._genre_ask(
                 telegram_id=telegram_id,
@@ -111,6 +121,7 @@ class DuplicateWatcher:
                 artist=track_artist,
                 track_id=track.id,
                 playlist_name=playlist_name,
+                dispute=dispute,
             )
         except Exception as e:
             log.warning(f"Failed to ask about the genre of '{track.name}': {e}")
@@ -340,9 +351,17 @@ class DuplicateWatcher:
                         except Exception as e:
                             log.warning(f"Failed to save new track: {e}")
 
-                    # Resolve genre; when nothing knows it, ask whoever added the track
+                    # Resolve genre; when nothing knows it or the sources disagree, ask whoever added the track
                     try:
-                        genre = await resolve_and_save_genre(self._pool, track, isrc)
+                        genre = await resolve_and_save_genre(self._pool, track, isrc, ask_on_dispute=True)
+                    except GenreDisputed as dispute:
+                        if saved_id is not None:
+                            await self._ask_genre(added_by, saved_id, track, track_artist, pl["name"], dispute)
+                        else:
+                            # Saving it to this playlist failed above. A track left without a genre is asked
+                            # about on the next pass; one that kept the first source's genre is not: it has a
+                            # genre then, which is enough after a failure.
+                            _log_nobody_asked(track, dispute, f"the track was not saved to {pl['name']}")
                     except Exception as e:
                         log.warning(f"Failed to resolve genre for '{track.name}': {e}")
                     else:

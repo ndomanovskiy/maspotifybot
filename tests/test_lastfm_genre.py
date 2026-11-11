@@ -2,13 +2,16 @@
 
 from unittest.mock import AsyncMock, patch, MagicMock
 import asyncio
+import copy
 import logging
+import pickle
 
 import anthropic
 import httpx
 import pytest
 
 from app.services.genre_distributor import PICK_TAGS, classify_track, classify_track_multi
+from tests.conftest import CHAIN, FakePlaylistItems, Sources, anthropic_error, make_item, make_track, track_by
 
 
 def run(coro):
@@ -240,63 +243,6 @@ class TestLastfmAnswers:
 # Genre resolution chain
 # ============================================================
 
-CHAIN = "app.services.genre_resolver"
-
-
-def track_by(*artist_names):
-    track = MagicMock()
-    track.name = "Song"
-    track.artists = []
-    for name in artist_names:
-        artist = MagicMock()
-        artist.name = name
-        track.artists.append(artist)
-    return track
-
-
-def claude_answering(text=None, error=None):
-    """An Anthropic client whose reply says `text`, or fails with `error`."""
-    client = MagicMock()
-    reply = MagicMock()
-    reply.content = [MagicMock(text=text)]
-    client.messages.create = AsyncMock(return_value=reply, side_effect=error)
-    return client
-
-
-def anthropic_error(kind, status, message):
-    """An Anthropic API error the way the SDK raises it."""
-    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-    body = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
-    return kind(f"Error code: {status} - {body}", response=httpx.Response(status, request=request), body=body)
-
-
-class Sources:
-    """Last.fm, Deezer and Claude answering as a test says. None stands for a source that did not answer."""
-
-    def __init__(self, track_tags=(), artists=((),), release_tags=(), ai=None, ai_error=None):
-        self.track_tags = AsyncMock(return_value=None if track_tags is None else list(track_tags))
-        self.artist_tags = AsyncMock(side_effect=[None if tags is None else list(tags) for tags in artists])
-        self.release_tags = AsyncMock(return_value=None if release_tags is None else list(release_tags))
-        self.claude = claude_answering(ai or "unknown", ai_error)
-
-    def resolve(self, track=None, isrc=None):
-        from app.services.genre_resolver import resolve_genre
-        with patch(f"{CHAIN}.get_track_tags", self.track_tags), \
-                patch(f"{CHAIN}.get_artist_tags", self.artist_tags), \
-                patch(f"{CHAIN}.get_release_genre_tags", self.release_tags), \
-                patch("app.services.ai.settings", anthropic_api_key="key"), \
-                patch("app.services.ai._get_anthropic", return_value=self.claude):
-            return run(resolve_genre(track or track_by("Artist"), isrc))
-
-    @property
-    def ai_asked(self):
-        return self.claude.messages.create.await_count > 0
-
-    @property
-    def ai_prompt(self):
-        return self.claude.messages.create.call_args.kwargs["messages"][0]["content"]
-
-
 class TestGenreResolutionChain:
     """Last.fm and Deezer gather what they know; Claude decides with it in front of it."""
 
@@ -410,10 +356,11 @@ class TestGenreResolutionChain:
         assert kwargs["timeout"] == 30
         assert "temperature" not in kwargs
 
-    # --- without Claude's answer, the first source that knew decides ---
+    # --- without Claude's answer, for callers that ask nobody: sources that agree, else the first decides ---
 
     def test_track_tags_decide_when_claude_does_not_know(self):
-        sources = Sources(track_tags=["rock", "80s"], release_tags=["metal"])
+        """Deezer's punk leads to Rock as well: the sources agree, and the track's own tags come first."""
+        sources = Sources(track_tags=["rock", "80s"], release_tags=["punk"])
 
         assert sources.resolve() == "rock"
         sources.artist_tags.assert_not_called()
@@ -529,3 +476,150 @@ class TestGenreResolutionChain:
 
         with pytest.raises(GenreLookupFailed):
             Sources(ai_error=bad_request).resolve()
+
+
+class TestDisputedGenre:
+    """Without Claude's genre: a dispute is when each source names a playlist the other does not say.
+
+    A broader or more exact genre by the hierarchy counts as saying it: Rock and Metal, Electronic and DnB,
+    Pop and R&B.
+    """
+
+    def dispute(self, **sources):
+        from app.services.genre_resolver import GenreDisputed
+        with pytest.raises(GenreDisputed) as raised:
+            Sources(**sources).resolve(ask_on_dispute=True)
+        return raised.value
+
+    def test_sources_naming_different_genres_are_a_dispute(self):
+        dispute = self.dispute(track_tags=["hip hop"], release_tags=["rock"])
+
+        assert dispute.choices == ["rock", "hip hop"]
+        assert dispute.fallback == "hip hop"
+        assert dispute.sources == ["Last.fm", "Deezer"]
+
+    def test_a_dispute_survives_copy_and_pickle(self):
+        """Its constructor takes only keywords, while copy and pickle rebuild exceptions from their args."""
+        dispute = self.dispute(track_tags=["hip hop"], release_tags=["rock"])
+        dispute.kept = "hip hop"
+
+        for twin in (copy.copy(dispute), pickle.loads(pickle.dumps(dispute))):
+            assert (twin.choices, twin.fallback, twin.sources, twin.kept, str(twin)) == (
+                ["rock", "hip hop"], "hip hop", ["Last.fm", "Deezer"], "hip hop", str(dispute),
+            )
+
+    def test_each_naming_something_the_other_did_not_is_a_dispute(self):
+        dispute = self.dispute(track_tags=["hip hop", "rock"], release_tags=["electronic", "rock"])
+
+        assert dispute.choices == ["electronic", "rock", "hip hop"]
+
+    def test_artists_tags_take_part_in_a_dispute(self):
+        dispute = self.dispute(artists=[["hip hop"]], release_tags=["electronic"])
+
+        assert (dispute.choices, dispute.sources) == (["electronic", "hip hop"], ["Last.fm", "Deezer"])
+
+    def test_claude_failing_leaves_the_dispute_to_a_person(self):
+        overloaded = anthropic_error(anthropic.RateLimitError, 429, "Number of requests has exceeded your rate limit")
+
+        dispute = self.dispute(track_tags=["hip hop"], release_tags=["rock"], ai_error=overloaded)
+
+        assert dispute.choices == ["rock", "hip hop"]
+
+    def test_claude_without_credit_leaves_the_dispute_to_a_person(self):
+        no_credit = anthropic_error(anthropic.BadRequestError, 400, "Your credit balance is too low to access the API.")
+
+        dispute = self.dispute(track_tags=["hip hop"], release_tags=["rock"], ai_error=no_credit)
+
+        assert dispute.choices == ["rock", "hip hop"]
+
+    def test_sources_that_agree_decide(self):
+        assert Sources(track_tags=["punk", "rock"], release_tags=["rock"]).resolve(ask_on_dispute=True) == "punk, rock"
+
+    def test_a_source_that_says_more_decides(self):
+        """Deezer's Electronic is inside Last.fm's hip hop + electronic: nothing to settle."""
+        sources = Sources(track_tags=["hip hop", "electronic"], release_tags=["electronic"])
+
+        assert sources.resolve(ask_on_dispute=True) == "hip hop, electronic"
+
+    @pytest.mark.parametrize("lastfm,deezer,genre", [
+        (["drum and bass"], ["electronic"], "drum and bass"),
+        (["rock"], ["metal"], "metal"),
+        (["pop"], ["r&b"], "r&b"),
+    ])
+    def test_a_more_exact_genre_inside_a_broad_one_decides(self, lastfm, deezer, genre):
+        """DnB is electronic, metal is rock, R&B is pop: the hierarchy settles it, nobody is asked."""
+        assert Sources(track_tags=lastfm, release_tags=deezer).resolve(ask_on_dispute=True) == genre
+
+    @pytest.mark.parametrize("lastfm,deezer,playlists", [
+        (["electronic", "hip hop"], ["drum and bass"], ["TURDOM DnB", "TURDOM Hip-Hop"]),
+        (["hip hop", "rock"], ["metal"], ["TURDOM Hip-Hop", "TURDOM Metal"]),
+    ])
+    def test_a_more_exact_genre_and_one_more_genre_from_different_sources_agree(self, lastfm, deezer, playlists):
+        """One source makes the other's genre exact, the other adds one: neither contradicts the other.
+
+        DnB for Electronic, or Metal for Rock, plus Hip-Hop from the other source.
+        """
+        genre = Sources(track_tags=lastfm, release_tags=deezer).resolve(ask_on_dispute=True)
+
+        assert classify_track_multi(genre) == playlists
+
+    def test_a_source_saying_more_and_more_exactly_decides(self):
+        """Deezer makes Last.fm's Rock exact and adds Hip-Hop: it says all Last.fm says, and more."""
+        genre = Sources(track_tags=["rock"], release_tags=["metal", "hip hop"]).resolve(ask_on_dispute=True)
+
+        assert genre == "metal, hip hop"
+
+    def test_one_source_alone_decides(self):
+        assert Sources(release_tags=["metal"]).resolve(ask_on_dispute=True) == "metal"
+
+    def test_claudes_genre_settles_a_dispute(self):
+        sources = Sources(track_tags=["hip hop"], release_tags=["rock"], ai="Rock")
+
+        assert sources.resolve(ask_on_dispute=True) == "rock"
+
+    def test_without_asking_the_first_source_decides_a_dispute(self):
+        """Backfill and import ask nobody: a dispute there goes to the first source, as before."""
+        assert Sources(track_tags=["hip hop"], release_tags=["rock"]).resolve() == "hip hop"
+
+    def test_without_asking_a_more_exact_genre_still_decides(self):
+        assert Sources(track_tags=["rock"], release_tags=["metal"]).resolve() == "metal"
+
+    def test_saving_without_asking_keeps_the_first_sources_genre(self, store, fake_pool):
+        """The default asks nobody: a dispute does not come out as an exception."""
+        from app.services.genre_resolver import resolve_and_save_genre
+        store.add_playlist(id=1, spotify_id="sp1", name="PL1")
+        saved = store.add_track(playlist_id=1, spotify_track_id="t1", title="Song")
+        track = track_by("Artist")
+        track.id = "t1"
+
+        with Sources(track_tags=["hip hop"], release_tags=["rock"]).answering():
+            genre = run(resolve_and_save_genre(fake_pool, track))
+
+        assert genre == saved["genre"] == "hip hop"
+
+    def test_import_asks_nobody_and_keeps_the_first_sources_genre(self, store, fake_pool, caplog):
+        from app.services.playlists import import_playlist
+        caplog.set_level(logging.WARNING, logger="app.services.playlists")
+        spotify = AsyncMock()
+        spotify.playlist.return_value.name = "TURDOM#1 01/01/2026"
+        spotify.playlist_items.return_value = FakePlaylistItems(items=[make_item(make_track("t1"))])
+
+        with Sources(track_tags=["hip hop"], release_tags=["rock"]).answering(), \
+                patch("app.services.playlists.get_spotify", AsyncMock(return_value=spotify)):
+            run(import_playlist(fake_pool, "sp1"))
+
+        assert store._get_track_by_spotify_id("t1")["genre"] == "hip hop"
+        assert "Failed to resolve genre" not in caplog.text
+
+    def test_backfill_asks_nobody_and_keeps_the_first_sources_genre(self, store, fake_pool):
+        from app.services.genre_resolver import backfill_genres
+        store.add_playlist(id=1, spotify_id="sp1", name="PL1")
+        saved = store.add_track(playlist_id=1, spotify_track_id="t1", title="Song")
+        spotify = AsyncMock()
+        spotify.track.return_value = track_by("Artist")
+
+        with Sources(track_tags=["hip hop"], release_tags=["rock"]).answering(), \
+                patch(f"{CHAIN}.get_spotify", AsyncMock(return_value=spotify)):
+            result = run(backfill_genres(fake_pool))
+
+        assert (result["resolved"], saved["genre"]) == (1, "hip hop")

@@ -155,11 +155,14 @@ sequenceDiagram
                 end
                 opt New track that is not a duplicate
                     DW->>DB: INSERT tracks + playlist_tracks
-                    DW->>GR: resolve_and_save_genre(track, isrc)
-                    Note over GR: Keep a saved genre, else Last.fm and Deezer gather, Claude decides with their hints (without Claude the first that knew)
-                    GR->>DB: UPDATE genre
+                    DW->>GR: resolve_and_save_genre(track, isrc, ask_on_dispute=True)
+                    Note over GR: Keep a saved genre, else Last.fm and Deezer gather, Claude decides with their hints (without Claude, sources that agree, else the first of them)
+                    GR->>DB: UPDATE genre (on a disagreement, the first source's until someone picks)
                     opt Nobody knows the genre, and Last.fm, Deezer and AI all answered
-                        DW->>User: Ask whoever added it: genre buttons with ticks, 💾 Сохранить / 🤷 Не знаю
+                        DW->>User: Ask whoever added it: all 11 genre buttons with ticks, 💾 Сохранить / 🤷 Не знаю
+                    end
+                    opt AI gave no genre, and Last.fm and Deezer disagree (GenreDisputed)
+                        DW->>User: Ask whoever added it: only the genres they named, 💾 Сохранить / 🤷 Не знаю
                     end
                     DW->>User: Dropped in a past session? Ask ✅ Оставить / 🗑 Убрать (not thematic, not kept)
                 end
@@ -167,7 +170,7 @@ sequenceDiagram
             DW->>DB: Delete playlist_tracks and kept_duplicates rows of tracks gone from the playlist
         end
         Note over User,DB: «Оставить» stores a kept_duplicates row for this playlist while it is open. «Удалить» removes the track and that row.
-        Note over User,DB: Genre question: «Сохранить» saves the ticked genres, marked genre_approved, only if the track still has none. The answer names the genre playlists the track goes to under the genre hierarchy. «Не знаю», a track added by an account the bot does not know, or nothing found while Last.fm, Deezer or AI did not answer leaves it without a genre (listed in /playlist status).
+        Note over User,DB: Genre question: «Сохранить» saves the ticked genres, marked genre_approved, over a genre the bot found but not over a pick already made. The answer names the genre playlists the track goes to under the genre hierarchy. When nothing was found: «Не знаю», a track added by an account the bot does not know, or a source that did not answer leaves it without a genre (listed in /playlist status). When the sources disagree, the track keeps the first source's genre (if it could be saved) until someone picks: nobody answering, «Не знаю», a track added by an account the bot does not know, or a track not saved to the playlist leaves it with that genre, which the question and the «Не знаю» answer name.
 
         Note over DW: Also generate AI facts
         DW->>DB: Get tracks without ai_facts (upcoming playlist)
@@ -270,7 +273,7 @@ sequenceDiagram
         loop Each track
             PL->>DB: INSERT playlist_tracks
             PL->>GR: resolve_and_save_genre(track, isrc)
-            Note over GR: Keep a saved genre, else Last.fm and Deezer gather, Claude decides with their hints (without Claude the first that knew)
+            Note over GR: Keep a saved genre, else Last.fm and Deezer gather, Claude decides with their hints (without Claude, sources that agree, else the first of them)
             GR->>DB: UPDATE genre
         end
     end

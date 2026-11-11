@@ -15,7 +15,7 @@ Telegram bot for **TURDOM** music sessions — weekly Discord calls where a grou
 - **Live voting** — keep/drop voting with adaptive threshold (ceil 50% of participants)
 - **AI track facts** — interesting facts generated via Claude Sonnet (cached + realtime), or written by hand when the AI is unavailable
 - **Duplicate detection** — auto-detect by Spotify Track ID and ISRC, auto-remove
-- **Genre playlists** — 11 genre sub-playlists, auto-distribute kept tracks after session. Last.fm (tags of the track, else of its artists) and Deezer (the release genre) gather what they know, and Claude picks the genre with that as hints; without Claude the first of them that knew decides; when none knows it, the bot asks whoever added the track
+- **Genre playlists** — 11 genre sub-playlists, auto-distribute kept tracks after session. Last.fm (tags of the track, else of its artists) and Deezer (the release genre) gather what they know, and Claude picks the genre with that as hints; without Claude they decide when they agree (one naming more, or a more exact genre such as Metal for Rock, counts as agreeing). The bot asks whoever added the track when none knows it (all 11 genres to pick from) or when Last.fm and Deezer disagree with no word from Claude (only the genres they named; until someone picks, the track keeps the first one's genre if it could be saved)
 - **Session recap** — AI-generated session summary
 - **Statistics** — `/stats` (global), `/mystats` (personal), `/history` (session history with pagination)
 - **Playlist management** — create, archive, reschedule (collaborative access automatic)
@@ -113,7 +113,7 @@ Telegram-бот для музыкальных сессий **TURDOM** — еже
 - **Live-голосование** — keep/drop с адаптивным порогом (ceil 50% участников)
 - **AI-факты о треках** — генерация через Claude Sonnet (кэш + realtime) или вручную, когда AI недоступен
 - **Обнаружение дубликатов** — по Spotify Track ID и ISRC, авто-удаление
-- **Жанровые плейлисты** — 11 саб-плейлистов, автораспределение kept-треков после сессии. Last.fm (теги трека, иначе исполнителя) и Deezer (жанр релиза) собирают, что знают, и Claude выбирает жанр с этими подсказками; без Claude решает первый из них, кто знал; если не знает никто, бот спрашивает того, кто добавил трек
+- **Жанровые плейлисты** — 11 саб-плейлистов, автораспределение kept-треков после сессии. Last.fm (теги трека, иначе исполнителя) и Deezer (жанр релиза) собирают, что знают, и Claude выбирает жанр с этими подсказками; без Claude решают они сами, если согласны (согласие — и когда один называет больше, и когда уточняет жанр другого, как Metal уточняет Rock). Бот спрашивает того, кто добавил трек, если не знает никто (выбор из всех 11 жанров) или если Last.fm и Deezer разошлись, а Claude промолчал (выбор только из названных жанров; пока никто не выбрал, у трека жанр первого из них, если его удалось сохранить)
 - **Рекап сессии** — AI-генерация итогов
 - **Статистика** — `/stats` (общая), `/mystats` (персональная), `/history` (история с пагинацией)
 - **Управление плейлистами** — создание, архивация, перенос, invite-ссылки

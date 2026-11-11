@@ -42,11 +42,11 @@
 
 | Command | Description |
 |---------|-------------|
-| `/import <playlist_url>` | Import single playlist to DB |
-| `/import_all` | Import all TURDOM playlists from Spotify account |
+| `/import <playlist_url>` | Import single playlist to DB (genres as in `/backfill_genres`: nobody is asked) |
+| `/import_all` | Import all TURDOM playlists from Spotify account (genres as in `/import`) |
 | `/scan` | Force duplicate scan on active/upcoming playlists; skips thematic playlists and tracks kept with «Оставить» in that playlist |
 | `/reschedule <DD/MM/YYYY>` | Change upcoming playlist date |
-| `/backfill_genres [reset]` | Resolve genres for tracks that have none (Last.fm track and artist tags, Deezer, AI). `reset` first clears every genre except those people picked in the genre question; then Claude is asked about every track, which for the whole base takes hours and a couple of dollars |
+| `/backfill_genres [reset]` | Resolve genres for tracks that have none (Last.fm track and artist tags, Deezer, AI; it asks nobody, so when Claude gives no genre, a disagreement of Last.fm and Deezer goes to Last.fm). `reset` first clears every genre except those people picked in the genre question; then Claude is asked about every track, which for the whole base takes hours and a couple of dollars |
 | `/preview <track>` | Preview track card rendering |
 | `/dbinfo` | DB overview: sessions, playlists, users, action log |
 | `/health` | Playlist health check (facts, genres) |
@@ -77,7 +77,7 @@
 | `confirm_dup:<playlist_spotify_id>:<track_id>` | Suspected duplicate / dropped before | Remove the track from that playlist and forget any «Оставить» for it |
 | `keep_dup:<playlist_spotify_id>:<track_id>` | Suspected duplicate / dropped before | Keep the track; remembered for that playlist while it is open (`kept_duplicates`). Old `keep_dup:<track_id>` buttons answer but remember nothing |
 | `pln:t:<N>:<telegram_id>`, `pln:all:<N>`, `pln:send:<N>`, `pln:skip:<N>` | New playlist picker (admin) | Tick recipients, tick all, send, skip |
-| `gnr:t:<track_db_id>:<tag>`, `gnr:save:<track_db_id>`, `gnr:skip:<track_db_id>` | Genre question to whoever added a track (registered users) | Tick a genre; save the ticked genres unless the track got one meanwhile; «Не знаю» |
+| `gnr:t:<track_db_id>:<tag>`, `gnr:save:<track_db_id>`, `gnr:skip:<track_db_id>` | Genre question to whoever added a track (registered users) | Tick a genre (a disputed question offers only the genres the sources named); save the ticked genres over a genre the bot found, but not over a pick already made; «Не знаю» |
 
 ## Post-Session Flow (Typical Admin Sequence)
 

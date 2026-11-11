@@ -1,10 +1,12 @@
 """Shared fixtures for MaSpotifyBot tests."""
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from aiogram.types import Chat, Message, MessageEntity
 
@@ -329,9 +331,20 @@ class FakeStore:
         if "select genre from tracks where spotify_track_id = $1" in q:
             return next((t.get("genre") for t in self.tracks if t["spotify_track_id"] == args[0]), None)
 
-        if "update tracks set genre = $1, genre_approved = true where id = $2 and genre is null returning id" in q:
+        if "update tracks set genre = $1 where spotify_track_id = $2 and genre is null returning id" in q:
             for t in self.tracks:
-                if t["id"] == args[1] and t.get("genre") is None:
+                if t["spotify_track_id"] == args[1] and t.get("genre") is None:
+                    t["genre"] = args[0]
+                    return t["id"]
+            return None
+
+        if "select genre from tracks where id = $1" in q:
+            return next((t.get("genre") for t in self.tracks if t["id"] == args[0]), None)
+
+        if ("update tracks set genre = $1, genre_approved = true where id = $2 "
+                "and genre_approved is not true returning id") in q:
+            for t in self.tracks:
+                if t["id"] == args[1] and not t.get("genre_approved"):
                     t["genre"], t["genre_approved"] = args[0], True
                     return t["id"]
             return None
@@ -539,15 +552,6 @@ class FakeStore:
                 })
                 self._next_pt_id += 1
 
-        elif "update tracks set genre = $1 where spotify_track_id = $2" in q:
-            only_empty = "genre is null" in q
-            updated = 0
-            for t in self.tracks:
-                if t["spotify_track_id"] == args[1] and (t.get("genre") is None or not only_empty):
-                    t["genre"] = args[0]
-                    updated += 1
-            return f"UPDATE {updated}"  # the status asyncpg returns
-
         elif "update tracks set genre = null where genre_approved is not true" in q:
             for t in self.tracks:
                 if not t.get("genre_approved"):
@@ -680,3 +684,70 @@ def make_item(track: FakeTrack, added_by: str | None = None) -> FakePlaylistItem
         track=track,
         added_by=FakeAddedBy(id=added_by) if added_by else None,
     )
+
+
+# --- Genre sources: Last.fm, Deezer and Claude as a test wants them ---
+
+CHAIN = "app.services.genre_resolver"
+
+
+def track_by(*artist_names):
+    track = MagicMock()
+    track.name = "Song"
+    track.artists = []
+    for name in artist_names:
+        artist = MagicMock()
+        artist.name = name
+        track.artists.append(artist)
+    return track
+
+
+def claude_answering(text=None, error=None):
+    """An Anthropic client whose reply says `text`, or fails with `error`."""
+    client = MagicMock()
+    reply = MagicMock()
+    reply.content = [MagicMock(text=text)]
+    client.messages.create = AsyncMock(return_value=reply, side_effect=error)
+    return client
+
+
+def anthropic_error(kind, status, message):
+    """An Anthropic API error the way the SDK raises it."""
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+    return kind(f"Error code: {status} - {body}", response=httpx.Response(status, request=request), body=body)
+
+
+class Sources:
+    """Last.fm, Deezer and Claude answering as a test says. None stands for a source that did not answer."""
+
+    def __init__(self, track_tags=(), artists=((),), release_tags=(), ai=None, ai_error=None):
+        self.track_tags = AsyncMock(return_value=None if track_tags is None else list(track_tags))
+        self.artist_tags = AsyncMock(side_effect=[None if tags is None else list(tags) for tags in artists])
+        self.release_tags = AsyncMock(return_value=None if release_tags is None else list(release_tags))
+        self.claude = claude_answering(ai or "unknown", ai_error)
+
+    @contextlib.contextmanager
+    def answering(self):
+        """Patch Last.fm, Deezer and Claude in for whatever runs meanwhile: any Claude call, facts too."""
+        with patch(f"{CHAIN}.get_track_tags", self.track_tags), \
+                patch(f"{CHAIN}.get_artist_tags", self.artist_tags), \
+                patch(f"{CHAIN}.get_release_genre_tags", self.release_tags), \
+                patch("app.services.ai.settings", anthropic_api_key="key"), \
+                patch("app.services.ai._get_anthropic", return_value=self.claude):
+            yield
+
+    def resolve(self, track=None, isrc=None, ask_on_dispute=None):
+        """resolve_genre with these sources; the flag is passed only when a test gives it."""
+        from app.services.genre_resolver import resolve_genre
+        flag = {} if ask_on_dispute is None else {"ask_on_dispute": ask_on_dispute}
+        with self.answering():
+            return asyncio.get_event_loop().run_until_complete(resolve_genre(track or track_by("Artist"), isrc, **flag))
+
+    @property
+    def ai_asked(self):
+        return self.claude.messages.create.await_count > 0
+
+    @property
+    def ai_prompt(self):
+        return self.claude.messages.create.call_args.kwargs["messages"][0]["content"]

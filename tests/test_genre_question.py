@@ -1,7 +1,8 @@
-"""A track whose genre nobody knows: the bot asks whoever added it."""
+"""A track whose genre nobody knows, or whose sources disagree: the bot asks whoever added it."""
 
 import asyncio
 import itertools
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,8 +11,8 @@ from aiogram.exceptions import TelegramBadRequest
 from app.bot import genre_question as question
 from app.services.duplicate_watcher import DuplicateWatcher
 from app.services.genre_distributor import GENRE_MAP, PICK_TAGS, classify_track_multi
-from app.services.genre_resolver import resolve_and_save_genre
-from tests.conftest import FakePlaylistItems, make_item, make_track
+from app.services.genre_resolver import GenreDisputed, GenreLookupFailed, resolve_and_save_genre
+from tests.conftest import FakePlaylistItems, Sources, make_item, make_track
 
 
 def run(coro):
@@ -56,6 +57,28 @@ def watch_new_track(fake_pool, resolve, added_by="spotify_ann", times_listed=1, 
     return ask
 
 
+def failing(answer, sql, after=0):
+    """A fake store handler that fails every query containing `sql` after the first `after` of them.
+
+    It answers all the other queries as `answer` does.
+    """
+    seen = itertools.count()
+
+    def query_fails(query, args):
+        if sql in query.lower() and next(seen) >= after:
+            raise Exception("database is down")
+        return answer(query, args)
+
+    return query_fails
+
+
+def disputed(*choices, first="hip hop", kept=None):
+    """The dispute resolve_genre raises when Last.fm and Deezer disagree; `kept` if the first genre was saved."""
+    dispute = GenreDisputed(choices=list(choices), fallback=first, sources=["Last.fm", "Deezer"])
+    dispute.kept = kept
+    return dispute
+
+
 def test_nobody_knows_the_genre_so_whoever_added_the_track_is_asked(store, fake_pool):
     add_playlist_and_ann(store)
 
@@ -63,7 +86,7 @@ def test_nobody_knows_the_genre_so_whoever_added_the_track_is_asked(store, fake_
 
     ask.assert_awaited_once_with(
         telegram_id=7, track_db_id=store.get_track(1, "new")["id"], track_title="Song",
-        artist="X", track_id="new", playlist_name="TURDOM#110 <3",
+        artist="X", track_id="new", playlist_name="TURDOM#110 <3", dispute=None,
     )
 
 
@@ -84,9 +107,40 @@ def test_the_isrc_goes_on_from_saving_to_the_lookup(store, fake_pool):
     track = make_track("t1")
 
     with patch("app.services.genre_resolver.resolve_genre", lookup):
-        run(resolve_and_save_genre(fake_pool, track, "RUA1D2600001"))
+        run(resolve_and_save_genre(fake_pool, track, "RUA1D2600001", ask_on_dispute=True))
 
-    lookup.assert_awaited_once_with(track, "RUA1D2600001")
+    lookup.assert_awaited_once_with(track, "RUA1D2600001", ask_on_dispute=True)
+
+
+def test_the_watcher_keeps_the_first_genre_and_asks_when_last_fm_and_deezer_disagree(store, fake_pool):
+    """The real lookup in the watcher: Last.fm's Hip-Hop against Deezer's Rock, and Claude does not know."""
+    add_playlist_and_ann(store)
+
+    with Sources(track_tags=["hip hop"], release_tags=["rock"]).answering():
+        ask = watch_new_track(fake_pool, resolve_and_save_genre)
+
+    ask.assert_awaited_once()
+    dispute = ask.call_args.kwargs["dispute"]
+    ask.assert_awaited_once_with(
+        telegram_id=7, track_db_id=store.get_track(1, "new")["id"], track_title="Song",
+        artist="X", track_id="new", playlist_name="TURDOM#110 <3", dispute=dispute,
+    )
+    assert store.get_track(1, "new")["genre"] == "hip hop"
+    assert (dispute.choices, dispute.fallback, dispute.kept, dispute.sources) == (
+        ["rock", "hip hop"], "hip hop", "hip hop", ["Last.fm", "Deezer"],
+    )
+
+
+def test_a_dispute_over_a_strangers_track_keeps_a_genre_and_asks_nobody(store, fake_pool, caplog):
+    caplog.set_level(logging.INFO, logger="app.services.duplicate_watcher")
+    add_playlist_and_ann(store)
+
+    with Sources(track_tags=["hip hop"], release_tags=["rock"]).answering():
+        ask = watch_new_track(fake_pool, resolve_and_save_genre, added_by="stranger")
+
+    ask.assert_not_called()
+    assert store.get_track(1, "new")["genre"] == "hip hop"
+    assert "and nobody is asked, it keeps hip hop: added by stranger" in caplog.text
 
 
 def test_a_known_genre_asks_nobody(store, fake_pool):
@@ -97,16 +151,17 @@ def test_a_known_genre_asks_nobody(store, fake_pool):
     ask.assert_not_called()
 
 
-def test_a_track_added_by_an_unknown_account_asks_nobody(store, fake_pool):
+def test_a_track_added_by_an_unknown_account_asks_nobody(store, fake_pool, caplog):
+    caplog.set_level(logging.INFO, logger="app.services.duplicate_watcher")
     add_playlist_and_ann(store)
 
     ask = watch_new_track(fake_pool, AsyncMock(return_value=None), added_by="stranger")
 
     ask.assert_not_called()
+    assert "No genre for 'Song' and nobody is asked: added by stranger" in caplog.text
 
 
 def test_a_source_not_answering_asks_nobody(store, fake_pool):
-    from app.services.genre_resolver import GenreLookupFailed
     add_playlist_and_ann(store)
 
     ask = watch_new_track(fake_pool, AsyncMock(side_effect=GenreLookupFailed("Deezer did not answer")))
@@ -127,6 +182,62 @@ def test_a_track_that_was_not_saved_is_not_asked_about(store, fake_pool):
         ask = watch_new_track(fake_pool, AsyncMock(return_value=None))
 
     ask.assert_not_called()
+
+
+def test_a_disputed_track_that_was_not_saved_is_not_asked_about(store, fake_pool, caplog):
+    caplog.set_level(logging.INFO, logger="app.services.duplicate_watcher")
+    add_playlist_and_ann(store)
+    saving_fails = failing(store.handle_execute, "insert into playlist_tracks")
+
+    with patch.object(store, "handle_execute", side_effect=saving_fails), \
+            Sources(track_tags=["hip hop"], release_tags=["rock"]).answering():
+        ask = watch_new_track(fake_pool, resolve_and_save_genre)
+
+    ask.assert_not_called()
+    assert store._get_track_by_spotify_id("new")["genre"] == "hip hop"
+    assert "it keeps hip hop: the track was not saved to TURDOM#110 <3" in caplog.text
+
+
+def test_a_disputed_track_left_without_a_genre_is_logged_without_one(store, fake_pool, caplog):
+    """Saving to the playlist and keeping the first genre both fail: the log must not claim a kept genre."""
+    caplog.set_level(logging.INFO, logger="app.services.duplicate_watcher")
+    add_playlist_and_ann(store)
+    saving_fails = failing(store.handle_execute, "insert into playlist_tracks")
+    keeping_fails = failing(store.handle_fetchval, "update tracks set genre = $1 where spotify_track_id")
+
+    with patch.object(store, "handle_execute", side_effect=saving_fails), \
+            patch.object(store, "handle_fetchval", side_effect=keeping_fails), \
+            Sources(track_tags=["hip hop"], release_tags=["rock"]).answering():
+        ask = watch_new_track(fake_pool, resolve_and_save_genre)
+
+    ask.assert_not_called()
+    assert store._get_track_by_spotify_id("new").get("genre") is None
+    assert "Sources disagree on the genre of 'Song' and nobody is asked: the track was not saved to" in caplog.text
+
+
+def test_a_genre_picked_while_a_lookup_found_none_asks_nobody(store, fake_pool):
+    """Nobody knew the genre, but someone picked one meanwhile: the watcher must not ask again."""
+    add_playlist_and_ann(store)
+
+    def picked_meanwhile(*args, **kwargs):
+        track = store._get_track_by_spotify_id("new")
+        track["genre"], track["genre_approved"] = "pop", True
+
+    with patch("app.services.genre_resolver.resolve_genre", AsyncMock(side_effect=picked_meanwhile)):
+        ask = watch_new_track(fake_pool, resolve_and_save_genre)
+
+    ask.assert_not_called()
+
+
+def test_a_silent_source_through_the_real_lookup_asks_nobody(store, fake_pool):
+    """The real lookup: Last.fm does not answer and Deezer knows nothing, so the genre may yet be found."""
+    add_playlist_and_ann(store)
+
+    with Sources(track_tags=None).answering():
+        ask = watch_new_track(fake_pool, resolve_and_save_genre)
+
+    ask.assert_not_called()
+    assert store.get_track(1, "new").get("genre") is None
 
 
 def test_a_track_listed_twice_is_asked_about_once(store, fake_pool):
@@ -214,6 +325,96 @@ def ticked(track_db_id, *genres, message_id=None):
     return markup
 
 
+def ask_disputed(dispute, track_db_id=5):
+    """Send Ann the question about a track the sources disagree on; return the send mock."""
+    send = AsyncMock()
+    with patch("app.bot.genre_question.send", send):
+        run(question.ask_genre(
+            telegram_id=ANN, track_db_id=track_db_id, track_title="Song", artist="X", track_id="t1",
+            playlist_name="PL", dispute=dispute,
+        ))
+    return send
+
+
+def test_a_disputed_question_offers_only_the_named_genres_and_says_what_the_track_keeps():
+    send = ask_disputed(disputed("electronic", "hip hop", kept="hip hop"))
+
+    assert labels(send.call_args.kwargs["reply_markup"]) == ["Electronic", "Hip-Hop", "💾 Сохранить", "🤷 Не знаю"]
+    assert send.call_args.args[1].endswith(
+        "Last.fm и Deezer разошлись в жанре. Пока у трека жанр: Hip-Hop. Отметь подходящие из того, что они "
+        "назвали, и нажми «Сохранить»: если трек оставят на сессии, его разложат по плейлистам отмеченных жанров."
+    )
+
+
+def test_the_genre_a_disputed_question_names_is_escaped():
+    send = ask_disputed(disputed("r&b", "rock", first="r&b", kept="r&b"))
+
+    assert "Пока у трека жанр: R&amp;B." in send.call_args.args[1]
+
+
+def test_a_disputed_question_names_no_genre_when_none_was_kept():
+    send = ask_disputed(disputed("electronic", "hip hop", kept=None))
+
+    assert send.call_args.args[1].endswith(
+        "Last.fm и Deezer разошлись в жанре. Отметь подходящие из того, что они назвали, и нажми «Сохранить»: "
+        "если трек оставят на сессии, его разложат по плейлистам отмеченных жанров."
+    )
+
+
+def test_dont_know_in_a_disputed_question_says_the_genre_the_track_keeps(store, fake_pool):
+    track = song(store, genre="hip hop")
+    dispute = disputed("rock", "hip hop", kept="hip hop")
+    markup = ask_disputed(dispute, track_db_id=track["id"]).call_args.kwargs["reply_markup"]
+
+    edit = tap(press(f"gnr:skip:{track['id']}", markup), fake_pool)
+
+    assert track["genre"] == "hip hop"
+    assert "🤷 Понял, у трека остаётся жанр: Hip-Hop." in edit.call_args.args[2]
+
+
+def test_dont_know_gives_a_neutral_text_when_the_genre_cannot_be_read(store, fake_pool, caplog):
+    track = song(store, genre="hip hop")
+    dispute = disputed("rock", "hip hop", kept="hip hop")
+    markup = ask_disputed(dispute, track_db_id=track["id"]).call_args.kwargs["reply_markup"]
+
+    with patch("app.bot.genre_question.get_track_genre", AsyncMock(side_effect=Exception("database is down"))):
+        edit = tap(press(f"gnr:skip:{track['id']}", markup), fake_pool)
+
+    assert "🤷 Понял, жанр не менял." in edit.call_args.args[2]
+    assert f"Failed to read the genre of track {track['id']}: database is down" in caplog.text
+
+
+def test_ticking_in_a_disputed_question_keeps_only_the_named_genres():
+    markup = ask_disputed(disputed("electronic", "hip hop")).call_args.kwargs["reply_markup"]
+    callback = press("gnr:t:5:hip hop", markup)
+
+    run(question.handle_callback(callback))
+
+    assert labels(redrawn(callback)) == ["Electronic", "✅ Hip-Hop", "💾 Сохранить", "🤷 Не знаю"]
+
+
+def test_only_the_offered_genres_can_be_ticked_in_a_disputed_question():
+    markup = ask_disputed(disputed("electronic", "hip hop")).call_args.kwargs["reply_markup"]
+    callback = press("gnr:t:5:rock", markup)
+
+    run(question.handle_callback(callback))
+
+    callback.message.edit_reply_markup.assert_not_called()
+    assert callback.answer.call_args.args == ("Ошибка",)
+
+
+def test_a_disputed_question_saves_the_pick_over_the_genre_kept_meanwhile(store, fake_pool):
+    track = song(store, genre="electronic")  # the first source's genre, kept until someone picks
+    dispute = disputed("electronic", "hip hop", first="electronic", kept="electronic")
+    markup = ask_disputed(dispute, track_db_id=track["id"]).call_args.kwargs["reply_markup"]
+    tick = press(f"gnr:t:{track['id']}:hip hop", markup, message_id=9500)
+    run(question.handle_callback(tick))
+
+    tap(press(f"gnr:save:{track['id']}", redrawn(tick), message_id=9500), fake_pool)
+
+    assert (track["genre"], track["genre_approved"]) == ("hip hop", True)
+
+
 def test_question_shows_the_track_and_every_genre_unticked():
     send = ask_about(5)
 
@@ -221,6 +422,10 @@ def test_question_shows_the_track_and_every_genre_unticked():
     text = send.call_args.args[1]
     assert "Song &lt;3" in text and "X &amp; Y" in text and "TURDOM#110 &lt;3" in text
     assert labels(send.call_args.kwargs["reply_markup"]) == [*GENRES, "💾 Сохранить", "🤷 Не знаю"]
+    assert text.endswith(
+        "Бот не нашёл жанр сам. Отметь один или несколько и нажми «Сохранить»: если трек оставят на сессии, "
+        "его разложат по плейлистам отмеченных жанров."
+    )
 
 
 def test_a_question_telegram_refuses_to_deliver_is_only_logged():
@@ -240,7 +445,7 @@ def test_a_database_failure_while_asking_does_not_stop_the_watcher(store, fake_p
 
 
 def test_backfill_pauses_after_a_failed_track_too(store, fake_pool):
-    from app.services.genre_resolver import GenreLookupFailed, backfill_genres
+    from app.services.genre_resolver import backfill_genres
     song(store)
     sp = AsyncMock()
     sp.track.return_value = make_track("t1")
@@ -328,13 +533,62 @@ def test_dont_know_saves_nothing_and_closes_the_question(store, fake_pool):
     assert "без жанра" in edit.call_args.args[2]
 
 
-def test_a_genre_saved_meanwhile_is_not_replaced(store, fake_pool):
+def test_the_genre_dont_know_names_is_escaped(store, fake_pool):
+    track = song(store, genre="r&b")
+
+    edit = tap(press(f"gnr:skip:{track['id']}", ask_about(track["id"]).call_args.kwargs["reply_markup"]), fake_pool)
+
+    assert "🤷 Понял, у трека остаётся жанр: R&amp;B." in edit.call_args.args[2]
+
+
+def test_dont_know_counts_a_genre_that_leads_to_no_playlist_as_none(store, fake_pool):
+    """'unknown' is what an old lookup saved when it found nothing; /playlist status lists it as no genre."""
+    track = song(store, genre="unknown")
+
+    edit = tap(press(f"gnr:skip:{track['id']}", ask_about(track["id"]).call_args.kwargs["reply_markup"]), fake_pool)
+
+    assert "🤷 Понял, трек останется без жанра." in edit.call_args.args[2]
+
+
+def test_save_tapped_while_dont_know_reads_the_genre_saves_nothing(store, fake_pool):
+    track = song(store)
+    markup = ticked(track["id"], "Rock", message_id=9070)
+
+    async def slow_read(pool, track_db_id):
+        await asyncio.sleep(0)  # «Сохранить» gets its turn here
+        return None
+
+    async def both_taps():
+        await asyncio.gather(
+            question.handle_callback(press(f"gnr:skip:{track['id']}", markup, message_id=9070)),
+            question.handle_callback(press(f"gnr:save:{track['id']}", markup, message_id=9070)),
+        )
+
+    with patch("app.bot.genre_question.get_track_genre", AsyncMock(side_effect=slow_read)), \
+            patch("app.bot.genre_question.get_pool", return_value=fake_pool), \
+            patch("app.bot.genre_question.edit_text", AsyncMock()):
+        run(both_taps())
+
+    assert track["genre"] is None
+
+
+def test_a_pick_replaces_a_genre_the_bot_found_meanwhile(store, fake_pool):
     track = song(store, genre="rock")
 
     edit = tap(press(f"gnr:save:{track['id']}", ticked(track["id"], "Pop")), fake_pool)
 
+    assert (track["genre"], track["genre_approved"]) == ("pop", True)
+    assert "Жанр: Pop" in edit.call_args.args[2]
+
+
+def test_a_genre_another_person_picked_is_not_replaced(store, fake_pool):
+    track = song(store, genre="rock")
+    track["genre_approved"] = True
+
+    edit = tap(press(f"gnr:save:{track['id']}", ticked(track["id"], "Pop")), fake_pool)
+
     assert track["genre"] == "rock"
-    assert "уже указан" in edit.call_args.args[2]
+    assert "уже выбран" in edit.call_args.args[2]
 
 
 def test_double_tap_on_save_closes_the_question_once(store, fake_pool):
@@ -363,7 +617,7 @@ def test_double_tap_on_save_at_the_same_moment_saves_once(store, fake_pool):
             question.handle_callback(press(f"gnr:save:{track['id']}", markup, message_id=9050)),
         )
 
-    with patch("app.bot.genre_question.save_genre_if_missing", AsyncMock(side_effect=slow_save)) as saving, \
+    with patch("app.bot.genre_question.save_picked_genre", AsyncMock(side_effect=slow_save)) as saving, \
             patch("app.bot.genre_question.get_pool", return_value=fake_pool), \
             patch("app.bot.genre_question.edit_text", AsyncMock()):
         run(both_taps())
@@ -566,6 +820,20 @@ def test_a_stranger_cannot_answer_the_question():
     assert callback.answer.call_args.kwargs.get("show_alert") is True
 
 
+def test_a_failed_first_read_stops_before_the_lookup(store, fake_pool):
+    """Without knowing whether the track has a genre, the bot must not look one up: nothing is saved or asked."""
+    song(store)
+    lookup = AsyncMock(return_value="rock")
+    first_read_fails = failing(store.handle_fetchval, "select genre from tracks where spotify_track_id")
+
+    with patch.object(store, "handle_fetchval", side_effect=first_read_fails), \
+            patch("app.services.genre_resolver.resolve_genre", lookup), \
+            pytest.raises(Exception, match="database is down"):
+        run(resolve_and_save_genre(fake_pool, make_track("t1")))
+
+    lookup.assert_not_called()
+
+
 def test_a_saved_genre_is_kept_and_not_looked_up_again(store, fake_pool):
     store.add_playlist(id=1, spotify_id="sp1", name="PL1")
     store.add_track(playlist_id=1, spotify_track_id="t1", title="Song", genre="rock")
@@ -587,6 +855,135 @@ def test_a_found_genre_is_saved_for_a_track_without_one(store, fake_pool):
 
     assert genre == "hip hop"
     assert store.get_track(1, "t1")["genre"] == "hip hop"
+
+
+def test_a_dispute_keeps_the_first_sources_genre_until_someone_picks(store, fake_pool):
+    """Nobody may answer the question: the track keeps a genre meanwhile."""
+    track = song(store)
+
+    with patch("app.services.genre_resolver.resolve_genre", AsyncMock(side_effect=disputed("rock", "hip hop"))), \
+            pytest.raises(GenreDisputed) as raised:
+        run(resolve_and_save_genre(fake_pool, make_track("t1"), ask_on_dispute=True))
+
+    assert (track["genre"], track["genre_approved"]) == ("hip hop", False)
+    assert raised.value.kept == "hip hop"  # the question can say what the track goes by
+
+
+def test_a_dispute_is_still_raised_when_keeping_the_first_genre_fails(store, fake_pool, caplog):
+    """The question still goes out and names no genre, since the track has none."""
+    track = song(store)
+    keeping_fails = failing(store.handle_fetchval, "update tracks set genre = $1 where spotify_track_id")
+
+    with patch.object(store, "handle_fetchval", side_effect=keeping_fails), \
+            patch("app.services.genre_resolver.resolve_genre", AsyncMock(side_effect=disputed("rock", "hip hop"))), \
+            pytest.raises(GenreDisputed) as raised:
+        run(resolve_and_save_genre(fake_pool, make_track("t1"), ask_on_dispute=True))
+
+    assert (track["genre"], raised.value.kept) == (None, None)
+    assert "database is down" in caplog.text
+    # The database error is logged, not chained to the dispute
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
+
+
+def test_a_dispute_is_settled_by_a_genre_the_track_got_during_the_lookup(store, fake_pool):
+    """The lookup takes seconds; a genre saved meanwhile stays, and nobody is asked about the other one."""
+    track = song(store)
+
+    def genre_saved_meanwhile(*args, **kwargs):
+        track["genre"] = "pop"
+        raise disputed("rock", "hip hop")
+
+    with patch("app.services.genre_resolver.resolve_genre", AsyncMock(side_effect=genre_saved_meanwhile)):
+        genre = run(resolve_and_save_genre(fake_pool, make_track("t1"), ask_on_dispute=True))
+
+    assert genre == track["genre"] == "pop"
+
+
+def test_a_found_genre_comes_back_even_with_no_track_to_save_it_to(store, fake_pool):
+    with patch("app.services.genre_resolver.resolve_genre", AsyncMock(return_value="rock")):
+        assert run(resolve_and_save_genre(fake_pool, make_track("t1"))) == "rock"
+
+
+def test_a_dispute_over_a_track_with_no_row_gives_the_first_genre_back(store, fake_pool):
+    """Nothing to save the first genre to, and so nothing to ask about: the caller gets that genre."""
+    with patch("app.services.genre_resolver.resolve_genre", AsyncMock(side_effect=disputed("rock", "hip hop"))):
+        assert run(resolve_and_save_genre(fake_pool, make_track("t1"), ask_on_dispute=True)) == "hip hop"
+
+
+def test_a_genre_saved_during_a_lookup_that_found_none_comes_back(store, fake_pool):
+    """Nobody knew the genre, but someone picked one meanwhile: the caller gets that genre, not None."""
+    track = song(store)
+
+    def picked_meanwhile(*args, **kwargs):
+        track["genre"], track["genre_approved"] = "pop", True
+
+    with patch("app.services.genre_resolver.resolve_genre", AsyncMock(side_effect=picked_meanwhile)):
+        assert run(resolve_and_save_genre(fake_pool, make_track("t1"))) == "pop"
+
+
+def test_a_genre_saved_during_a_lookup_where_a_source_failed_comes_back(store, fake_pool):
+    """A silent source no longer matters once the track has a genre: the caller gets it, no error."""
+    track = song(store)
+
+    def picked_meanwhile(*args, **kwargs):
+        track["genre"], track["genre_approved"] = "pop", True
+        raise GenreLookupFailed("Deezer did not answer")
+
+    with patch("app.services.genre_resolver.resolve_genre", AsyncMock(side_effect=picked_meanwhile)):
+        assert run(resolve_and_save_genre(fake_pool, make_track("t1"))) == "pop"
+
+
+def test_a_silent_source_passes_through_when_the_track_still_has_no_genre(store, fake_pool):
+    """Without a genre the watcher must hear that a source failed, or it would ask about a genre still to be found."""
+    song(store)
+
+    with patch("app.services.genre_resolver.resolve_genre", AsyncMock(side_effect=GenreLookupFailed("no answer"))), \
+            pytest.raises(GenreLookupFailed):
+        run(resolve_and_save_genre(fake_pool, make_track("t1")))
+
+
+def test_a_failed_second_read_still_reports_the_silent_source(store, fake_pool, caplog):
+    song(store)
+    # The first read, before the lookup, still works
+    second_read_fails = failing(store.handle_fetchval, "select genre from tracks where spotify_track_id", after=1)
+
+    with patch.object(store, "handle_fetchval", side_effect=second_read_fails), \
+            patch("app.services.genre_resolver.resolve_genre", AsyncMock(side_effect=GenreLookupFailed("no answer"))), \
+            pytest.raises(GenreLookupFailed) as raised:
+        run(resolve_and_save_genre(fake_pool, make_track("t1")))
+
+    assert "database is down" in caplog.text
+    # The database error is logged, not chained to the failed lookup
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None or raised.value.__suppress_context__
+
+
+def test_a_failed_second_read_after_finding_nothing_still_lets_the_watcher_ask(store, fake_pool, caplog):
+    """Nobody knew the genre and the second read fails: None comes back, so the question still goes out."""
+    add_playlist_and_ann(store)
+    second_read_fails = failing(store.handle_fetchval, "select genre from tracks where spotify_track_id", after=1)
+
+    with patch.object(store, "handle_fetchval", side_effect=second_read_fails), \
+            patch("app.services.genre_resolver.resolve_genre", AsyncMock(return_value=None)):
+        ask = watch_new_track(fake_pool, resolve_and_save_genre)
+
+    ask.assert_awaited_once()
+    assert ask.call_args.kwargs["dispute"] is None
+    assert "database is down" in caplog.text
+
+
+def test_a_genre_saved_during_the_lookup_is_the_one_returned(store, fake_pool):
+    """The lookup takes seconds; a genre saved meanwhile stays, and the caller learns that one."""
+    track = song(store)
+
+    def saved_meanwhile(*args, **kwargs):
+        track["genre"] = "pop"
+        return "rock"
+
+    with patch("app.services.genre_resolver.resolve_genre", AsyncMock(side_effect=saved_meanwhile)):
+        genre = run(resolve_and_save_genre(fake_pool, make_track("t1")))
+
+    assert genre == track["genre"] == "pop"
 
 
 def test_every_genre_playlist_can_be_picked_and_its_tag_leads_back_to_it():
