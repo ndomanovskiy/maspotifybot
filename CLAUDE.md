@@ -5,7 +5,7 @@ Collaborative music listening Telegram bot for TURDOM community. Users add track
 ## Stack
 
 - **Python 3.12**, aiogram v3 (Telegram), tekore (Spotify async), asyncpg (PostgreSQL)
-- **AI:** Claude Sonnet for track facts, session recap commentary and easter egg analysis, with no fallback: when the Anthropic call fails, those AI-written parts come out empty (the recap still sends its stats, the teaser has a fixed text). Genres: Last.fm tags, then Claude; when neither knows, the bot asks whoever added the track. The bot does not use OpenAI.
+- **AI:** Claude Sonnet for track facts, session recap commentary and easter egg analysis, with no fallback: when the Anthropic call fails, those AI-written parts come out empty (the recap still sends its stats, the teaser has a fixed text). Genres: Claude decides with what Last.fm tags and the Deezer release genre found (without Claude the first of them that knew decides); when none knows, the bot asks whoever added the track. The bot does not use OpenAI.
 - **Deploy:** local Docker on the owner's PC since 2026-09-30 (`docker compose up -d --build bot`). Spotify traffic exits through the host's Clash Verge.
 
 ## Project Structure

@@ -36,7 +36,8 @@ SUSPECT = {
 }
 
 
-def watch_new_track(fake_pool, resolve, added_by="spotify_ann", times_listed=1, duplicates=(), confirm=None):
+def watch_new_track(fake_pool, resolve, added_by="spotify_ann", times_listed=1, duplicates=(), confirm=None,
+                    looked_up_isrc=None):
     """One watcher pass over a playlist where 'Song' by 'X' was just added; return the question mock."""
     sp = AsyncMock()
     sp.playlist_items.return_value = FakePlaylistItems(
@@ -47,7 +48,7 @@ def watch_new_track(fake_pool, resolve, added_by="spotify_ann", times_listed=1, 
     with patch(f"{module}.get_spotify", AsyncMock(return_value=sp)), \
             patch(f"{module}.check_duplicate", AsyncMock(return_value=list(duplicates))), \
             patch(f"{module}.classify_duplicates", AsyncMock(side_effect=lambda pool, found: found)), \
-            patch(f"{module}.get_track_isrc", AsyncMock(return_value=None)), \
+            patch(f"{module}.get_track_isrc", AsyncMock(return_value=looked_up_isrc)), \
             patch(f"{module}.resolve_and_save_genre", resolve), \
             patch(f"{module}.check_previously_dropped", AsyncMock(return_value=None)):
         watcher = DuplicateWatcher(fake_pool, AsyncMock(), confirm_callback=confirm, genre_ask_callback=ask)
@@ -66,6 +67,28 @@ def test_nobody_knows_the_genre_so_whoever_added_the_track_is_asked(store, fake_
     )
 
 
+def test_the_genre_lookup_gets_the_isrc_the_watcher_found_in_spotify(store, fake_pool):
+    """Spotify left the ISRC out of the playlist item; the watcher looked it up, Deezer needs it."""
+    add_playlist_and_ann(store)
+    resolve = AsyncMock(return_value="rock")
+
+    watch_new_track(fake_pool, resolve, looked_up_isrc="RUA1D2600001")
+
+    assert "RUA1D2600001" in [*resolve.call_args.args, *resolve.call_args.kwargs.values()]
+
+
+def test_the_isrc_goes_on_from_saving_to_the_lookup(store, fake_pool):
+    store.add_playlist(id=1, spotify_id="sp1", name="PL1")
+    store.add_track(playlist_id=1, spotify_track_id="t1", title="Song")
+    lookup = AsyncMock(return_value=None)
+    track = make_track("t1")
+
+    with patch("app.services.genre_resolver.resolve_genre", lookup):
+        run(resolve_and_save_genre(fake_pool, track, "RUA1D2600001"))
+
+    lookup.assert_awaited_once_with(track, "RUA1D2600001")
+
+
 def test_a_known_genre_asks_nobody(store, fake_pool):
     add_playlist_and_ann(store)
 
@@ -82,11 +105,11 @@ def test_a_track_added_by_an_unknown_account_asks_nobody(store, fake_pool):
     ask.assert_not_called()
 
 
-def test_lastfm_or_ai_not_answering_asks_nobody(store, fake_pool):
+def test_a_source_not_answering_asks_nobody(store, fake_pool):
     from app.services.genre_resolver import GenreLookupFailed
     add_playlist_and_ann(store)
 
-    ask = watch_new_track(fake_pool, AsyncMock(side_effect=GenreLookupFailed("Last.fm did not answer")))
+    ask = watch_new_track(fake_pool, AsyncMock(side_effect=GenreLookupFailed("Deezer did not answer")))
 
     ask.assert_not_called()
 
@@ -224,7 +247,7 @@ def test_backfill_pauses_after_a_failed_track_too(store, fake_pool):
 
     with patch("app.services.genre_resolver.get_spotify", AsyncMock(return_value=sp)), \
             patch("app.services.genre_resolver.resolve_genre",
-                  AsyncMock(side_effect=GenreLookupFailed("Last.fm did not answer"))), \
+                  AsyncMock(side_effect=GenreLookupFailed("Deezer did not answer"))), \
             patch("app.services.genre_resolver.asyncio.sleep", AsyncMock()) as pause:
         result = run(backfill_genres(fake_pool))
 

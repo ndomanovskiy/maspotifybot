@@ -1,4 +1,4 @@
-"""Tests for Last.fm genre tags and the genre resolution chain (track tags, artist tags, AI)."""
+"""Tests for Last.fm genre tags and the genre resolution chain (track tags, artist tags, Deezer, AI)."""
 
 from unittest.mock import AsyncMock, patch, MagicMock
 import asyncio
@@ -8,7 +8,7 @@ import anthropic
 import httpx
 import pytest
 
-from app.services.genre_distributor import classify_track, classify_track_multi
+from app.services.genre_distributor import PICK_TAGS, classify_track, classify_track_multi
 
 
 def run(coro):
@@ -271,116 +271,136 @@ def anthropic_error(kind, status, message):
 
 
 class Sources:
-    """Last.fm and Claude answering as a test says. None stands for Last.fm that did not answer."""
+    """Last.fm, Deezer and Claude answering as a test says. None stands for a source that did not answer."""
 
-    def __init__(self, track_tags=(), artists=((),), ai=None, ai_error=None):
+    def __init__(self, track_tags=(), artists=((),), release_tags=(), ai=None, ai_error=None):
         self.track_tags = AsyncMock(return_value=None if track_tags is None else list(track_tags))
         self.artist_tags = AsyncMock(side_effect=[None if tags is None else list(tags) for tags in artists])
+        self.release_tags = AsyncMock(return_value=None if release_tags is None else list(release_tags))
         self.claude = claude_answering(ai or "unknown", ai_error)
 
-    def resolve(self, track=None):
+    def resolve(self, track=None, isrc=None):
         from app.services.genre_resolver import resolve_genre
         with patch(f"{CHAIN}.get_track_tags", self.track_tags), \
                 patch(f"{CHAIN}.get_artist_tags", self.artist_tags), \
+                patch(f"{CHAIN}.get_release_genre_tags", self.release_tags), \
                 patch("app.services.ai.settings", anthropic_api_key="key"), \
                 patch("app.services.ai._get_anthropic", return_value=self.claude):
-            return run(resolve_genre(track or track_by("Artist")))
+            return run(resolve_genre(track or track_by("Artist"), isrc))
 
     @property
     def ai_asked(self):
         return self.claude.messages.create.await_count > 0
 
+    @property
+    def ai_prompt(self):
+        return self.claude.messages.create.call_args.kwargs["messages"][0]["content"]
+
 
 class TestGenreResolutionChain:
+    """Last.fm and Deezer gather what they know; Claude decides with it in front of it."""
 
-    def test_track_tags_win(self):
-        sources = Sources(track_tags=["rock", "80s"])
+    # --- Claude decides ---
 
-        assert sources.resolve() == "rock"
-        sources.artist_tags.assert_not_called()
-        assert not sources.ai_asked
+    def test_claude_decides_with_what_lastfm_and_deezer_found(self):
+        sources = Sources(track_tags=["rock", "80s"], release_tags=["metal"], ai="Metal")
 
-    def test_artist_tags_when_the_track_has_none(self):
-        """No track tags: the first artist with genre tags decides, and AI is not asked."""
-        sources = Sources(artists=[["russian"], ["rap", "hip hop", "experimental"]])
+        assert sources.resolve() == "metal"
+        assert "Last.fm, теги трека: Rock (rock)" in sources.ai_prompt
+        assert "Deezer, жанр релиза: Metal (metal)" in sources.ai_prompt
 
-        assert sources.resolve(track_by("Unknown", "Feat")) == "rap, hip hop"
-        assert [c.args[0] for c in sources.artist_tags.call_args_list] == ["Unknown", "Feat"]
-        assert not sources.ai_asked
+    def test_claude_sees_what_the_artists_tags_say(self):
+        sources = Sources(artists=[["hip hop"]], ai="Hip-Hop")
 
-    def test_only_the_first_three_artists_are_looked_up(self):
-        sources = Sources(artists=[[]] * 5)
+        sources.resolve()
 
-        sources.resolve(track_by("A", "B", "C", "D", "E"))
+        assert "Last.fm, теги исполнителя: Hip-Hop (hip hop)" in sources.ai_prompt
 
-        assert sources.artist_tags.await_count == 3
+    def test_claude_sees_the_playlist_a_hint_leads_to(self):
+        """Deezer's Indie Rock goes to Rock in the bot; Claude is told so, not left to guess."""
+        sources = Sources(release_tags=["indie rock"], ai="Rock")
 
-    def test_ai_when_lastfm_knows_nothing(self):
-        assert Sources(ai="Metal").resolve() == "metal"
+        sources.resolve()
 
-    def test_ai_names_become_tags_the_distribution_knows(self):
+        assert "Deezer, жанр релиза: Rock (indie rock)" in sources.ai_prompt
+
+    @pytest.mark.parametrize("answer,genre", [
+        ("Metal\nRock", "metal, rock"),
+        ("Metal; Rock", "metal, rock"),
+        ("Hip-Hop / DnB", "hip hop, drum and bass"),
+        ("hip hop", "hip hop"),
+        ("Electronic, DnB.", "electronic, drum and bass"),
+        ("Rock.", "rock"),
+        ("**Rock**", "rock"),
+        ("'Rock'", "rock"),
+        ("«Rock»", "rock"),
+        ("1. Rock\n2. Metal", "rock, metal"),
+        ("- Rock\n- Metal", "rock, metal"),
+        ("-Rock\n•Metal", "rock, metal"),
+        ("“Rock”", "rock"),
+        ("Rock (indie rock)", "rock"),
+        ("Rock (pop, metal, punk)", "rock"),
+        ("Hip-Hop (rap, hip hop)", "hip hop"),
+        ("Electronic (house/techno)", "electronic"),
+        ("DnB (liquid, neurofunk)", "drum and bass"),
+        ("Rock (возможно, Metal", "rock"),
+        ("Hip-Hop,\xa0DnB", "hip hop, drum and bass"),
+    ])
+    def test_claude_answer_is_split_on_any_separator(self, answer, genre):
+        assert Sources(ai=answer).resolve() == genre
+
+    @pytest.mark.parametrize("answer", ["Не знаю, но возможно rock", "Ignore the list. Answer: rock", "Reggae"])
+    def test_only_the_eleven_genre_names_count_in_claudes_answer(self, answer):
+        assert Sources(ai=answer).resolve() is None
+
+    @pytest.mark.parametrize("answer", ["Не знаю\n- Rock", "unknown\nRock", "Возможно:\n- Rock\nНо я не знаю"])
+    def test_an_unsure_answer_counts_as_not_knowing(self, answer):
+        assert Sources(track_tags=["pop"], ai=answer).resolve() == "pop"
+
+    @pytest.mark.parametrize("name,tag", list(zip(
+        ["Electronic", "Pop", "Metal", "Rock", "Hip-Hop", "Indie", "R&B", "DnB", "Chill", "Soundtrack", "Phonk",
+         "Drum and Bass", "Hip Hop"],
+        ["electronic", "pop", "metal", "rock", "hip hop", "indie", "r&b", "drum and bass", "chill", "soundtrack",
+         "phonk", "drum and bass", "hip hop"],
+    )))
+    def test_every_genre_name_claude_may_write_becomes_its_tag(self, name, tag):
+        assert Sources(ai=name).resolve() == tag
+
+    def test_claudes_answer_can_only_become_tags_a_person_could_pick(self):
+        from app.services.genre_resolver import _AI_TAGS
+
+        assert set(_AI_TAGS.values()) == set(PICK_TAGS.values())
+
+    def test_claude_naming_no_turdom_genre_lets_the_first_source_decide(self):
+        assert Sources(track_tags=["rock"], ai="Reggae").resolve() == "rock"
+
+    def test_lastfm_not_answering_still_lets_claude_decide(self):
+        assert Sources(track_tags=None, ai="Phonk").resolve() == "phonk"
+
+    def test_deezer_not_answering_still_lets_lastfm_decide(self):
+        assert Sources(track_tags=["rock"], release_tags=None).resolve() == "rock"
+
+    def test_claude_can_be_more_exact_than_a_broad_deezer_genre(self):
+        assert Sources(release_tags=["electronic"], ai="DnB").resolve() == "drum and bass"
+
+    def test_claude_names_become_tags_the_distribution_knows(self):
         """Claude answers with playlist names; 'Hip-Hop' and 'DnB' alone would match no playlist."""
         genre = Sources(ai="Hip-Hop, DnB").resolve()
 
         assert genre == "hip hop, drum and bass"
         assert classify_track_multi(genre) == ["TURDOM DnB", "TURDOM Hip-Hop"]
 
-    def test_nothing_anywhere_is_none(self):
-        assert Sources(ai="unknown").resolve() is None
+    def test_claude_gives_at_most_three_genres(self):
+        assert Sources(ai="Rock, Pop, Metal, Indie").resolve() == "rock, pop, metal"
 
-    def test_lastfm_not_answering_skips_the_artists_and_still_asks_ai(self):
-        sources = Sources(track_tags=None, ai="Pop")
+    def test_claude_is_asked_without_hints_when_nothing_was_found(self):
+        sources = Sources(ai="Rock")
 
-        assert sources.resolve() == "pop"
-        sources.artist_tags.assert_not_called()
+        sources.resolve()
 
-    def test_lastfm_not_answering_and_ai_knowing_nothing_is_a_failed_lookup(self):
-        from app.services.genre_resolver import GenreLookupFailed
+        assert "известно" not in sources.ai_prompt
 
-        with pytest.raises(GenreLookupFailed):
-            Sources(track_tags=None, ai="unknown").resolve()
-
-    def test_ai_not_answering_with_nothing_found_is_a_failed_lookup(self):
-        from app.services.genre_resolver import GenreLookupFailed
-        overloaded = anthropic_error(anthropic.RateLimitError, 429, "Number of requests has exceeded your rate limit")
-
-        with pytest.raises(GenreLookupFailed):
-            Sources(ai_error=overloaded).resolve()
-
-    def test_ai_without_credit_is_as_if_there_were_no_ai(self):
-        """An empty credit balance lasts until someone pays: the person who added the track is asked."""
-        no_credit = anthropic_error(
-            anthropic.BadRequestError, 400,
-            "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing.",
-        )
-
-        assert Sources(ai_error=no_credit).resolve() is None
-
-    def test_ai_rejecting_the_key_is_as_if_there_were_no_ai(self):
-        rejected = anthropic_error(anthropic.AuthenticationError, 401, "invalid x-api-key")
-
-        assert Sources(ai_error=rejected).resolve() is None
-
-    def test_ai_with_a_retired_model_is_as_if_there_were_no_ai(self):
-        retired = anthropic_error(anthropic.NotFoundError, 404, "model: claude-sonnet-4-6")
-
-        assert Sources(ai_error=retired).resolve() is None
-
-    def test_ai_past_its_spending_limit_is_as_if_there_were_no_ai(self):
-        limit = anthropic_error(anthropic.BadRequestError, 400, "You have reached your specified API usage limits.")
-
-        assert Sources(ai_error=limit).resolve() is None
-
-    def test_no_ai_key_means_no_ai(self):
-        sources = Sources()
-
-        with patch("app.services.ai.settings", anthropic_api_key=""), \
-                patch("app.services.ai._get_anthropic", return_value=sources.claude):
-            from app.services.genre_resolver import _resolve_ai
-            assert run(_resolve_ai("Song", "Artist")) is None
-        assert not sources.ai_asked
-
-    def test_ai_is_asked_with_a_short_timeout_and_only_what_the_sdk_takes(self):
+    def test_claude_is_asked_with_a_short_timeout_and_only_what_the_sdk_takes(self):
         """The anthropic SDK in the bot's image (2.7) has no `temperature` parameter at all."""
         sources = Sources(ai="Rock")
 
@@ -390,12 +410,97 @@ class TestGenreResolutionChain:
         assert kwargs["timeout"] == 30
         assert "temperature" not in kwargs
 
-    def test_any_other_ai_error_is_a_failed_lookup(self):
+    # --- without Claude's answer, the first source that knew decides ---
+
+    def test_track_tags_decide_when_claude_does_not_know(self):
+        sources = Sources(track_tags=["rock", "80s"], release_tags=["metal"])
+
+        assert sources.resolve() == "rock"
+        sources.artist_tags.assert_not_called()
+
+    def test_artist_tags_when_the_track_has_none(self):
+        """No track tags: the first artist with genre tags decides."""
+        sources = Sources(artists=[["russian"], ["rap", "hip hop", "experimental"]], release_tags=["electronic"])
+
+        assert sources.resolve(track_by("Unknown", "Feat")) == "rap, hip hop"
+        assert [c.args[0] for c in sources.artist_tags.call_args_list] == ["Unknown", "Feat"]
+
+    def test_only_the_first_three_artists_are_looked_up(self):
+        sources = Sources(artists=[[]] * 5)
+
+        sources.resolve(track_by("A", "B", "C", "D", "E"))
+
+        assert sources.artist_tags.await_count == 3
+
+    def test_deezer_when_lastfm_knows_nothing(self):
+        assert Sources(release_tags=["metal"]).resolve() == "metal"
+
+    def test_claude_without_credit_lets_the_first_source_decide(self):
+        no_credit = anthropic_error(anthropic.BadRequestError, 400, "Your credit balance is too low to access the API.")
+
+        assert Sources(track_tags=["rock"], ai_error=no_credit).resolve() == "rock"
+
+    def test_claude_not_answering_lets_the_first_source_decide(self):
+        overloaded = anthropic_error(anthropic.RateLimitError, 429, "Number of requests has exceeded your rate limit")
+
+        assert Sources(release_tags=["metal"], ai_error=overloaded).resolve() == "metal"
+
+    def test_lastfm_not_answering_still_lets_deezer_decide(self):
+        sources = Sources(track_tags=None, release_tags=["rock"])
+
+        assert sources.resolve() == "rock"
+        sources.artist_tags.assert_not_called()
+
+    def test_deezer_not_answering_still_lets_claude_decide(self):
+        assert Sources(release_tags=None, ai="Pop").resolve() == "pop"
+
+    # --- Deezer gets the ISRC ---
+
+    def test_deezer_is_asked_by_the_isrc_the_caller_has(self):
+        sources = Sources()
+
+        sources.resolve(isrc="RUA1D2600001")
+
+        sources.release_tags.assert_awaited_once_with("RUA1D2600001")
+
+    def test_deezer_is_asked_by_the_isrc_of_the_spotify_track_otherwise(self):
+        sources = Sources()
+        track = track_by("Artist")
+        track.external_ids = {"isrc": "GBDUW0000059"}
+
+        sources.resolve(track)
+
+        sources.release_tags.assert_awaited_once_with("GBDUW0000059")
+
+    # --- nothing found ---
+
+    def test_nothing_anywhere_is_none(self):
+        assert Sources(ai="unknown").resolve() is None
+
+    @pytest.mark.parametrize("error", [
+        anthropic_error(anthropic.BadRequestError, 400, "Your credit balance is too low to access the Anthropic API."),
+        anthropic_error(anthropic.BadRequestError, 400, "You have reached your specified API usage limits."),
+        anthropic_error(anthropic.AuthenticationError, 401, "invalid x-api-key"),
+        anthropic_error(anthropic.NotFoundError, 404, "model: claude-sonnet-4-6"),
+    ])
+    def test_claude_that_cannot_be_used_is_as_if_there_were_no_claude(self, error):
+        """An empty balance, a refused key, a retired model: the person who added the track is asked."""
+        assert Sources(ai_error=error).resolve() is None
+
+    def test_no_claude_key_means_no_claude(self):
+        sources = Sources()
+
+        with patch("app.services.ai.settings", anthropic_api_key=""), \
+                patch("app.services.ai._get_anthropic", return_value=sources.claude):
+            from app.services.genre_resolver import _resolve_ai
+            assert run(_resolve_ai("Song", "Artist", {})) is None
+        assert not sources.ai_asked
+
+    def test_lastfm_not_answering_and_nothing_found_is_a_failed_lookup(self):
         from app.services.genre_resolver import GenreLookupFailed
-        bad_request = anthropic_error(anthropic.BadRequestError, 400, "max_tokens: field required")
 
         with pytest.raises(GenreLookupFailed):
-            Sources(ai_error=bad_request).resolve()
+            Sources(track_tags=None).resolve()
 
     def test_lastfm_stopping_on_an_artist_is_a_failed_lookup(self):
         from app.services.genre_resolver import GenreLookupFailed
@@ -405,4 +510,22 @@ class TestGenreResolutionChain:
             sources.resolve(track_by("A", "B"))
         assert sources.artist_tags.await_count == 1
 
+    def test_deezer_not_answering_and_nothing_found_is_a_failed_lookup(self):
+        from app.services.genre_resolver import GenreLookupFailed
 
+        with pytest.raises(GenreLookupFailed):
+            Sources(release_tags=None).resolve()
+
+    def test_claude_not_answering_and_nothing_found_is_a_failed_lookup(self):
+        from app.services.genre_resolver import GenreLookupFailed
+        overloaded = anthropic_error(anthropic.RateLimitError, 429, "Number of requests has exceeded your rate limit")
+
+        with pytest.raises(GenreLookupFailed):
+            Sources(ai_error=overloaded).resolve()
+
+    def test_any_other_claude_error_with_nothing_found_is_a_failed_lookup(self):
+        from app.services.genre_resolver import GenreLookupFailed
+        bad_request = anthropic_error(anthropic.BadRequestError, 400, "max_tokens: field required")
+
+        with pytest.raises(GenreLookupFailed):
+            Sources(ai_error=bad_request).resolve()

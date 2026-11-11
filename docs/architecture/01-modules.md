@@ -25,6 +25,7 @@ graph TB
         GD[genre_distributor.py]
         GR[genre_resolver.py]
         LF[lastfm.py]
+        DZ[deezer.py]
         AI[ai.py]
         DW[duplicate_watcher.py]
         FA[facts.py]
@@ -71,6 +72,7 @@ graph TB
     DW --> GR
     P --> GR
     GR --> LF
+    GR --> DZ
     GR --> AI
     GR --> GD
     GD --> AUTH
@@ -122,7 +124,8 @@ graph TB
 | `app/services/playlists.py` | Playlist import, duplicate check, «Оставить» decisions (`kept_duplicates`), create/reschedule | auth.py, genre_resolver.py, pool |
 | `app/services/admin_commands.py` | Post-session commands: distribute, recap, close, create_next, dbinfo | genre_distributor.py, playlists.py, ai.py, pool |
 | `app/services/genre_distributor.py` | Genre classification (GENRE_MAP), the tag saved for each genre a person picks (PICK_TAGS), distribute tracks to genre playlists | auth.py, pool |
-| `app/services/genre_resolver.py` | Track genre: keeps a saved one, else Last.fm track tags → Last.fm artist tags → Claude (`GenreLookupFailed` when nothing was found and a source did not answer; a source with no key, a refused key or no credit counts as absent); saves a genre a person picked (`genre_approved`); backfill | lastfm.py, genre_distributor.py, ai.py, auth.py, pool |
+| `app/services/genre_resolver.py` | Track genre: keeps a saved one, else Claude decides with Last.fm (track, else artist) tags and the Deezer release genre as hints, and without Claude the first of them that knew decides (`GenreLookupFailed` when nothing was found and a source did not answer; a source with no key, a refused key or no credit counts as absent); saves a genre a person picked (`genre_approved`); backfill | lastfm.py, deezer.py, genre_distributor.py, ai.py, auth.py, playlists.py (`extract_isrc`, imported lazily: playlists imports this module), pool |
+| `app/services/deezer.py` | Deezer API client, no key: the genre of a track's release by ISRC, as tags the genre playlists know; «Alternative», a compilation or someone else's release decides nothing; tells «knows nothing» (`[]`) from «did not answer» (`None`) | httpx |
 | `app/services/lastfm.py` | Last.fm API client: genre tags of a track or an artist; tells «knows nothing» (`[]`) from «did not answer» (`None`) | httpx |
 | `app/services/ai.py` | Claude Sonnet: track facts, recap, teaser (no fallback); `ask_claude` for short questions such as a genre | anthropic |
 | `app/services/facts.py` | Hand-written track facts: list tracks without facts, check Telegram HTML, save (CLI: `python -m app.services.facts`) | asyncpg (own pool for the CLI) |

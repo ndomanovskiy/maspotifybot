@@ -342,7 +342,7 @@ class DuplicateWatcher:
 
                     # Resolve genre; when nothing knows it, ask whoever added the track
                     try:
-                        genre = await resolve_and_save_genre(self._pool, track)
+                        genre = await resolve_and_save_genre(self._pool, track, isrc)
                     except Exception as e:
                         log.warning(f"Failed to resolve genre for '{track.name}': {e}")
                     else:

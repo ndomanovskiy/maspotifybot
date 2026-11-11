@@ -46,7 +46,7 @@
 | `/import_all` | Import all TURDOM playlists from Spotify account |
 | `/scan` | Force duplicate scan on active/upcoming playlists; skips thematic playlists and tracks kept with «Оставить» in that playlist |
 | `/reschedule <DD/MM/YYYY>` | Change upcoming playlist date |
-| `/backfill_genres [reset]` | Resolve genres for tracks that have none (Last.fm track and artist tags, AI). `reset` first clears every genre except those people picked in the genre question |
+| `/backfill_genres [reset]` | Resolve genres for tracks that have none (Last.fm track and artist tags, Deezer, AI). `reset` first clears every genre except those people picked in the genre question; then Claude is asked about every track, which for the whole base takes hours and a couple of dollars |
 | `/preview <track>` | Preview track card rendering |
 | `/dbinfo` | DB overview: sessions, playlists, users, action log |
 | `/health` | Playlist health check (facts, genres) |

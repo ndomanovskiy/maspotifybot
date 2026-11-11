@@ -633,14 +633,25 @@ class FakePlaylistItems:
             self.total = len(self.items)
 
 
+class _DeezerKnowsNothing:
+    """Stands in for the Deezer client, which needs no key: every lookup finds nothing."""
+
+    async def get(self, url, **kwargs):
+        response = MagicMock()
+        response.json.return_value = {"error": {"type": "DataException", "message": "no data", "code": 800}}
+        return response
+
+
 # --- Fixtures ---
 
 @pytest.fixture(autouse=True)
 def no_real_genre_lookups(monkeypatch):
-    """Tests never reach Last.fm or Anthropic, whatever keys the local .env holds."""
+    """Tests never reach Last.fm, Deezer or Anthropic, whatever keys the local .env holds."""
     from app.config import settings
+    from app.services import deezer
     monkeypatch.setattr(settings, "lastfm_api_key", "")
     monkeypatch.setattr(settings, "anthropic_api_key", "")
+    monkeypatch.setattr(deezer, "_get_client", lambda: _DeezerKnowsNothing())
 
 
 @pytest.fixture

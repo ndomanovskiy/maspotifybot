@@ -54,6 +54,22 @@ def test_import_playlist_saves_isrc(store, fake_pool):
     assert store._get_track_by_spotify_id("t")["isrc"] == "CA6D22500492"
 
 
+def test_import_hands_the_isrc_to_the_genre_lookup(store, fake_pool):
+    sp = AsyncMock()
+    playlist = MagicMock()
+    playlist.name = "TURDOM#1 01/01/2026"
+    playlist.tracks.total = 1
+    sp.playlist.return_value = playlist
+    sp.playlist_items.return_value = FakePlaylistItems(items=[make_item(FullTrack(**SPOTIFY_TRACK))])
+    resolve = AsyncMock()
+
+    with patch("app.services.playlists.get_spotify", AsyncMock(return_value=sp)), \
+            patch("app.services.playlists.resolve_and_save_genre", resolve):
+        run(import_playlist(fake_pool, "sp1"))
+
+    assert "CA6D22500492" in [*resolve.call_args.args, *resolve.call_args.kwargs.values()]
+
+
 def test_watcher_checks_duplicates_by_isrc_without_extra_request(store, fake_pool):
     store.add_playlist(id=1, spotify_id="sp1", name="PL1", status="upcoming")
     sp = AsyncMock()

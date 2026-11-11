@@ -92,9 +92,9 @@ async def import_playlist(pool: asyncpg.Pool, playlist_spotify_id: str) -> dict:
                     )
                     imported += 1
 
-                    # Resolve genre (Last.fm, AI); an import asks nobody
+                    # Resolve genre (Last.fm, Deezer, AI); an import asks nobody
                     try:
-                        await resolve_and_save_genre(pool, track)
+                        await resolve_and_save_genre(pool, track, isrc)
                     except Exception as e:
                         log.warning(f"Failed to resolve genre for '{track.name}': {e}")
 

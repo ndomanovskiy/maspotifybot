@@ -19,5 +19,5 @@ Collaborative music listening bot: Telegram + Spotify. Users add tracks to share
 - **Bot:** Python 3.12, aiogram v3
 - **Spotify:** tekore (async)
 - **DB:** PostgreSQL, asyncpg
-- **AI:** Claude Sonnet (track facts, recap, genres Last.fm does not know)
+- **AI:** Claude Sonnet (track facts, recap, the genre choice; Last.fm and Deezer give it hints)
 - **Deploy:** Docker Compose on the owner's PC since 2026-09-30

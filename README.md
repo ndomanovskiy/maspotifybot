@@ -15,7 +15,7 @@ Telegram bot for **TURDOM** music sessions — weekly Discord calls where a grou
 - **Live voting** — keep/drop voting with adaptive threshold (ceil 50% of participants)
 - **AI track facts** — interesting facts generated via Claude Sonnet (cached + realtime), or written by hand when the AI is unavailable
 - **Duplicate detection** — auto-detect by Spotify Track ID and ISRC, auto-remove
-- **Genre playlists** — 11 genre sub-playlists, auto-distribute kept tracks after session. The genre comes from Last.fm tags of the track, then of its artists, then Claude; when none of them knows it, the bot asks whoever added the track
+- **Genre playlists** — 11 genre sub-playlists, auto-distribute kept tracks after session. Last.fm (tags of the track, else of its artists) and Deezer (the release genre) gather what they know, and Claude picks the genre with that as hints; without Claude the first of them that knew decides; when none knows it, the bot asks whoever added the track
 - **Session recap** — AI-generated session summary
 - **Statistics** — `/stats` (global), `/mystats` (personal), `/history` (session history with pagination)
 - **Playlist management** — create, archive, reschedule (collaborative access automatic)
@@ -25,7 +25,7 @@ Telegram bot for **TURDOM** music sessions — weekly Discord calls where a grou
 
 - **Python 3.12**, aiogram 3, tekore (async Spotify API)
 - **PostgreSQL 16** (asyncpg)
-- **Claude Sonnet** — track facts, session recap, genres Last.fm does not know; **Last.fm** — genre tags
+- **Claude Sonnet** — track facts, session recap, the genre choice; **Last.fm**, **Deezer** — genre hints
 - **Docker Compose** — bot + db, run locally on the owner's PC
 
 ## Commands
@@ -75,8 +75,9 @@ app/
     ai.py                — track facts and recap generation (Claude)
     facts.py             — hand-written track facts when the AI is unavailable
     duplicate_watcher.py — background duplicate check, AI facts, genre question to whoever added a track
-    genre_resolver.py    — a track's genre: Last.fm, Claude, or the pick of whoever added it
+    genre_resolver.py    — a track's genre: Last.fm, Deezer, Claude, or the pick of whoever added it
     lastfm.py            — Last.fm genre tags of tracks and artists
+    deezer.py            — the genre Deezer has for a track's release, found by ISRC
     genre_distributor.py — genre classification and distribution
     playlists.py         — playlist management
   spotify/
@@ -112,7 +113,7 @@ Telegram-бот для музыкальных сессий **TURDOM** — еже
 - **Live-голосование** — keep/drop с адаптивным порогом (ceil 50% участников)
 - **AI-факты о треках** — генерация через Claude Sonnet (кэш + realtime) или вручную, когда AI недоступен
 - **Обнаружение дубликатов** — по Spotify Track ID и ISRC, авто-удаление
-- **Жанровые плейлисты** — 11 саб-плейлистов, автораспределение kept-треков после сессии. Жанр берётся из тегов Last.fm у трека, потом у его исполнителей, потом у Claude; если никто не знает, бот спрашивает того, кто добавил трек
+- **Жанровые плейлисты** — 11 саб-плейлистов, автораспределение kept-треков после сессии. Last.fm (теги трека, иначе исполнителя) и Deezer (жанр релиза) собирают, что знают, и Claude выбирает жанр с этими подсказками; без Claude решает первый из них, кто знал; если не знает никто, бот спрашивает того, кто добавил трек
 - **Рекап сессии** — AI-генерация итогов
 - **Статистика** — `/stats` (общая), `/mystats` (персональная), `/history` (история с пагинацией)
 - **Управление плейлистами** — создание, архивация, перенос, invite-ссылки
@@ -122,7 +123,7 @@ Telegram-бот для музыкальных сессий **TURDOM** — еже
 
 - **Python 3.12**, aiogram 3, tekore (async Spotify API)
 - **PostgreSQL 16** (asyncpg)
-- **Claude Sonnet** — факты о треках, рекап сессии, жанры, которых нет в Last.fm; **Last.fm** — жанровые теги
+- **Claude Sonnet** — факты о треках, рекап сессии, выбор жанра; **Last.fm**, **Deezer** — подсказки о жанре
 - **Docker Compose** — bot + db, локально на компьютере владельца
 
 ## Команды
@@ -172,8 +173,9 @@ app/
     ai.py                — генерация фактов и рекапов (Claude)
     facts.py             — ручные факты, когда AI недоступен
     duplicate_watcher.py — фоновая проверка дубликатов, AI-факты, вопрос о жанре добавившему
-    genre_resolver.py    — жанр трека: Last.fm, Claude или выбор того, кто добавил
+    genre_resolver.py    — жанр трека: Last.fm, Deezer, Claude или выбор того, кто добавил
     lastfm.py            — жанровые теги треков и исполнителей из Last.fm
+    deezer.py            — жанр релиза трека в Deezer, по ISRC
     genre_distributor.py — классификация и распределение по жанрам
     playlists.py         — управление плейлистами
   spotify/
