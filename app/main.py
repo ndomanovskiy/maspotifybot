@@ -6,6 +6,8 @@ from app.db.pool import create_pool, close_pool
 from app.db.schema import apply_schema
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+# httpx logs every request URL at INFO, and a Last.fm URL carries the API key
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("maspotifybot")
 
 

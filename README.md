@@ -15,7 +15,7 @@ Telegram bot for **TURDOM** music sessions — weekly Discord calls where a grou
 - **Live voting** — keep/drop voting with adaptive threshold (ceil 50% of participants)
 - **AI track facts** — interesting facts generated via Claude Sonnet (cached + realtime), or written by hand when the AI is unavailable
 - **Duplicate detection** — auto-detect by Spotify Track ID and ISRC, auto-remove
-- **Genre playlists** — 11 genre sub-playlists, auto-distribute kept tracks after session
+- **Genre playlists** — 11 genre sub-playlists, auto-distribute kept tracks after session. The genre comes from Last.fm tags of the track, then of its artists, then Claude; when none of them knows it, the bot asks whoever added the track
 - **Session recap** — AI-generated session summary
 - **Statistics** — `/stats` (global), `/mystats` (personal), `/history` (session history with pagination)
 - **Playlist management** — create, archive, reschedule (collaborative access automatic)
@@ -25,7 +25,7 @@ Telegram bot for **TURDOM** music sessions — weekly Discord calls where a grou
 
 - **Python 3.12**, aiogram 3, tekore (async Spotify API)
 - **PostgreSQL 16** (asyncpg)
-- **Claude Sonnet** — track facts, session recap; **OpenAI GPT-4o-mini** — genres
+- **Claude Sonnet** — track facts, session recap, genres Last.fm does not know; **Last.fm** — genre tags
 - **Docker Compose** — bot + db, run locally on the owner's PC
 
 ## Commands
@@ -63,7 +63,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-Tests cover voting logic, session flow, race conditions, caption limits, genre classification, the duplicate watcher, HTML escaping, hand-written facts, access control, stats, history, leave/kick.
+Tests cover voting logic, session flow, race conditions, caption limits, genre classification, the genre question, the duplicate watcher, HTML escaping, hand-written facts, access control, stats, history, leave/kick.
 
 ## Architecture
 
@@ -74,7 +74,9 @@ app/
     voting.py            — voting and threshold logic
     ai.py                — track facts and recap generation (Claude)
     facts.py             — hand-written track facts when the AI is unavailable
-    duplicate_watcher.py — background duplicate check + AI facts
+    duplicate_watcher.py — background duplicate check, AI facts, genre question to whoever added a track
+    genre_resolver.py    — a track's genre: Last.fm, Claude, or the pick of whoever added it
+    lastfm.py            — Last.fm genre tags of tracks and artists
     genre_distributor.py — genre classification and distribution
     playlists.py         — playlist management
   spotify/
@@ -88,6 +90,8 @@ scripts/
 ## Deploy
 
 The bot runs in Docker Compose on the owner's PC: `docker compose up -d --build bot`. There is no CI deploy.
+
+The image installs dependencies with `constraints.txt`, a `pip freeze` of the image that runs now, so a rebuild gets the same versions. To upgrade a package on purpose, change it there and rebuild.
 
 ## License
 
@@ -108,7 +112,7 @@ Telegram-бот для музыкальных сессий **TURDOM** — еже
 - **Live-голосование** — keep/drop с адаптивным порогом (ceil 50% участников)
 - **AI-факты о треках** — генерация через Claude Sonnet (кэш + realtime) или вручную, когда AI недоступен
 - **Обнаружение дубликатов** — по Spotify Track ID и ISRC, авто-удаление
-- **Жанровые плейлисты** — 11 саб-плейлистов, автораспределение kept-треков после сессии
+- **Жанровые плейлисты** — 11 саб-плейлистов, автораспределение kept-треков после сессии. Жанр берётся из тегов Last.fm у трека, потом у его исполнителей, потом у Claude; если никто не знает, бот спрашивает того, кто добавил трек
 - **Рекап сессии** — AI-генерация итогов
 - **Статистика** — `/stats` (общая), `/mystats` (персональная), `/history` (история с пагинацией)
 - **Управление плейлистами** — создание, архивация, перенос, invite-ссылки
@@ -118,7 +122,7 @@ Telegram-бот для музыкальных сессий **TURDOM** — еже
 
 - **Python 3.12**, aiogram 3, tekore (async Spotify API)
 - **PostgreSQL 16** (asyncpg)
-- **Claude Sonnet** — факты о треках, рекап сессии; **OpenAI GPT-4o-mini** — жанры
+- **Claude Sonnet** — факты о треках, рекап сессии, жанры, которых нет в Last.fm; **Last.fm** — жанровые теги
 - **Docker Compose** — bot + db, локально на компьютере владельца
 
 ## Команды
@@ -156,7 +160,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-Тесты покрывают логику голосования, session flow, race conditions, лимиты caption, жанровую классификацию, duplicate watcher, экранирование HTML, ручные факты, access control, статистику, историю, leave/kick.
+Тесты покрывают логику голосования, session flow, race conditions, лимиты caption, жанровую классификацию, вопрос о жанре, duplicate watcher, экранирование HTML, ручные факты, access control, статистику, историю, leave/kick.
 
 ## Архитектура
 
@@ -167,7 +171,9 @@ app/
     voting.py            — голосование и threshold
     ai.py                — генерация фактов и рекапов (Claude)
     facts.py             — ручные факты, когда AI недоступен
-    duplicate_watcher.py — фоновая проверка дубликатов + AI-факты
+    duplicate_watcher.py — фоновая проверка дубликатов, AI-факты, вопрос о жанре добавившему
+    genre_resolver.py    — жанр трека: Last.fm, Claude или выбор того, кто добавил
+    lastfm.py            — жанровые теги треков и исполнителей из Last.fm
     genre_distributor.py — классификация и распределение по жанрам
     playlists.py         — управление плейлистами
   spotify/
@@ -181,6 +187,8 @@ scripts/
 ## Деплой
 
 Бот работает в Docker Compose на компьютере владельца: `docker compose up -d --build bot`. Автодеплоя нет.
+
+Образ ставит зависимости с `constraints.txt` — это `pip freeze` работающего сейчас образа, поэтому пересборка ставит те же версии. Чтобы обновить пакет осознанно, поменяй версию там и пересобери.
 
 ## Лицензия
 

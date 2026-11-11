@@ -2,14 +2,12 @@ import logging
 from collections.abc import Callable
 
 import anthropic
-from openai import AsyncOpenAI
 
 from app.config import settings
 
 log = logging.getLogger(__name__)
 
 _anthropic_client: anthropic.AsyncAnthropic | None = None
-_openai_client: AsyncOpenAI | None = None
 
 _HTML_FORMAT_INSTRUCTION = (
     "Форматируй текст в Telegram HTML: <b>жирный</b>, <i>курсив</i>, <code>код</code>. "
@@ -24,11 +22,32 @@ def _get_anthropic() -> anthropic.AsyncAnthropic:
     return _anthropic_client
 
 
-def get_openai() -> AsyncOpenAI:
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
-    return _openai_client
+async def ask_claude(prompt: str, max_tokens: int) -> str | None:
+    """One short question to Claude: its answer, or None when Claude cannot be used at all.
+
+    Cannot be used means no key, a key the API rejects, a model it no longer serves, an empty
+    credit balance or a spending limit reached: states that last until someone fixes them.
+    Anything else (overload, rate limit, network, a 30-second timeout) raises.
+    """
+    if not settings.anthropic_api_key:
+        return None
+    try:
+        response = await _get_anthropic().messages.create(
+            model=_RECAP_MODEL,
+            max_tokens=max_tokens,
+            timeout=30,  # the watcher waits for it, so it must not hang for the SDK's 10 minutes
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except (anthropic.AuthenticationError, anthropic.NotFoundError) as e:
+        log.warning(f"Anthropic refuses the key or the model ({type(e).__name__}), going on without Claude")
+        return None
+    except anthropic.BadRequestError as e:
+        text = str(e).lower()
+        if "credit balance" in text or "usage limits" in text:
+            log.warning("Anthropic credit balance is empty or its spending limit is reached, going on without Claude")
+            return None
+        raise
+    return response.content[0].text.strip() if response.content else ""
 
 
 async def _call_llm(system: str, user_content: str, max_tokens: int) -> tuple[str, str]:

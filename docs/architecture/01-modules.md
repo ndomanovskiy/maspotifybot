@@ -11,6 +11,7 @@ graph TB
         CB["callbacks.py<br/>Callback handlers"]
         PN["playlist_notify.py<br/>New playlist picker"]
         DM["duplicate_messages.py<br/>Duplicate-check texts"]
+        GQ["genre_question.py<br/>Genre question to the adder"]
         subgraph Commands["commands/"]
             USR["user.py<br/>User commands"]
             ADM["admin.py<br/>Admin commands"]
@@ -23,6 +24,7 @@ graph TB
         AC[admin_commands.py]
         GD[genre_distributor.py]
         GR[genre_resolver.py]
+        LF[lastfm.py]
         AI[ai.py]
         DW[duplicate_watcher.py]
         FA[facts.py]
@@ -48,14 +50,18 @@ graph TB
     CB --> SM
     USR --> SM
     USR --> P
-    USR --> GR
+    USR --> GD
     ADM --> AC
     ADM --> SM
     ADM --> P
     ADM --> GD
-    ADM --> DW
+    ADM --> GR
     INIT --> DM
     INIT --> DW
+    INIT --> GQ
+    CB --> GQ
+    GQ --> GR
+    GQ --> GD
 
     AC --> GD
     AC --> P
@@ -64,6 +70,9 @@ graph TB
     DW --> AI
     DW --> GR
     P --> GR
+    GR --> LF
+    GR --> AI
+    GR --> GD
     GD --> AUTH
 
     V --> AUTH
@@ -93,14 +102,15 @@ graph TB
 
 | File | Lines | Responsibility |
 |------|-------|----------------|
-| `app/bot/__init__.py` | 187 | Router wiring, `setup_bot()` |
+| `app/bot/__init__.py` | 189 | Router wiring, `setup_bot()` |
 | `app/bot/core.py` | 151 | `bot`, `dp`, `pool`, `is_admin`, `is_registered`, `extract_spotify_id`, decorators (`@require_admin`, `@require_registered`, `@require_admin_callback`), message helpers (`send`, `reply`, `send_photo`, `reply_photo`, `edit_text`, `edit_caption`), `safe_int`, `parse_turdom_number` |
 | `app/bot/session_manager.py` | 695 | `SessionManager` singleton: all session state, `on_track_change`, `end_session`, `check_session_complete`, `finalize_track_card`, `update_vote_buttons`, `recover`, `send_recap_carousel`, `cache_pre_recap_teaser` |
-| `app/bot/callbacks.py` | 643 | All `callback_query` handlers: voting, skip, regen_facts, approve/deny, session control, recap carousel, playlist creation, history pagination, duplicate «Удалить»/«Оставить» |
+| `app/bot/callbacks.py` | 654 | All `callback_query` handlers: voting, skip, regen_facts, approve/deny, session control, recap carousel, playlist creation, history pagination, duplicate «Удалить»/«Оставить», genre question |
 | `app/bot/playlist_notify.py` | — | Admin picker for who gets notified about a new playlist: `offer_notification`, `handle_callback` |
+| `app/bot/genre_question.py` | 194 | Asks whoever added a track for its genre when nobody else knows it: genre buttons with ticks, «Сохранить», «Не знаю»; the answer names where the track goes (`ask_genre`, `handle_callback`) |
 | `app/bot/duplicate_messages.py` | 118 | Texts of the duplicate-check messages (auto-removed, possible duplicate, dropped before, modified version); escapes every name |
 | `app/bot/commands/user.py` | 799 | `/start`, `/reg`, `/next`, `/get`, `/genres`, `/check`, `/stats`, `/mystats`, `/history`, `/join`, `/leave`, `/secret` |
-| `app/bot/commands/admin.py` | 757 | `/auth`, `/session`, `/preview`, `/reschedule`, `/scan`, `/import`, `/import_all`, `/distribute`, `/recap`, `/close_playlist`, `/create_next`, `/health`, `/dbinfo`, `/backfill_genres` |
+| `app/bot/commands/admin.py` | 758 | `/auth`, `/session`, `/preview`, `/reschedule`, `/scan`, `/import`, `/import_all`, `/distribute`, `/recap`, `/close_playlist`, `/create_next`, `/health`, `/dbinfo`, `/backfill_genres` |
 | `app/config.py` | — | Pydantic settings (env vars) |
 | `app/main.py` | — | Entry point, pool + schema init |
 
@@ -111,11 +121,12 @@ graph TB
 | `app/services/voting.py` | Vote recording, threshold calculation, track removal, skip | auth.py, pool |
 | `app/services/playlists.py` | Playlist import, duplicate check, «Оставить» decisions (`kept_duplicates`), create/reschedule | auth.py, genre_resolver.py, pool |
 | `app/services/admin_commands.py` | Post-session commands: distribute, recap, close, create_next, dbinfo | genre_distributor.py, playlists.py, ai.py, pool |
-| `app/services/genre_distributor.py` | Genre classification (GENRE_MAP), distribute tracks to genre playlists | auth.py, pool |
-| `app/services/genre_resolver.py` | Resolve track genre via Spotify artist API, backfill | auth.py, pool |
-| `app/services/ai.py` | Claude Sonnet: track facts, recap, teaser (no fallback); OpenAI client for genres | anthropic, openai |
+| `app/services/genre_distributor.py` | Genre classification (GENRE_MAP), the tag saved for each genre a person picks (PICK_TAGS), distribute tracks to genre playlists | auth.py, pool |
+| `app/services/genre_resolver.py` | Track genre: keeps a saved one, else Last.fm track tags → Last.fm artist tags → Claude (`GenreLookupFailed` when nothing was found and a source did not answer; a source with no key, a refused key or no credit counts as absent); saves a genre a person picked (`genre_approved`); backfill | lastfm.py, genre_distributor.py, ai.py, auth.py, pool |
+| `app/services/lastfm.py` | Last.fm API client: genre tags of a track or an artist; tells «knows nothing» (`[]`) from «did not answer» (`None`) | httpx |
+| `app/services/ai.py` | Claude Sonnet: track facts, recap, teaser (no fallback); `ask_claude` for short questions such as a genre | anthropic |
 | `app/services/facts.py` | Hand-written track facts: list tracks without facts, check Telegram HTML, save (CLI: `python -m app.services.facts`) | asyncpg (own pool for the CLI) |
-| `app/services/duplicate_watcher.py` | Background: poll playlists, detect duplicates, auto-remove, generate AI facts | playlists.py, ai.py, genre_resolver.py, auth.py, pool |
+| `app/services/duplicate_watcher.py` | Background: poll playlists, detect duplicates, auto-remove, ask whoever added a track for its genre when nobody knows it, generate AI facts | playlists.py, ai.py, genre_resolver.py, auth.py, pool |
 
 ### Spotify Layer
 

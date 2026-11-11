@@ -108,7 +108,7 @@ class FakeStore:
 
     def add_track(self, *, playlist_id: int, spotify_track_id: str, title: str = "",
                   artist: str = "", isrc: str | None = None, ai_facts: str | None = None,
-                  added_by_spotify_id: str | None = None) -> dict:
+                  added_by_spotify_id: str | None = None, genre: str | None = None) -> dict:
         """Add a track to both `tracks` and `playlist_tracks` tables.
 
         Returns a composite dict that merges track-level and link-level fields,
@@ -130,6 +130,8 @@ class FakeStore:
                 "album": None,
                 "isrc": isrc,
                 "ai_facts": ai_facts,
+                "genre": genre,
+                "genre_approved": False,
                 "normalized_title": None,
                 "normalized_artist": None,
             }
@@ -206,6 +208,9 @@ class FakeStore:
 
         if "from kept_duplicates" in q:
             return [FakeRecord(k) for k in self.kept_duplicates if k["playlist_id"] == args[0]]
+
+        if "select distinct spotify_track_id from tracks where genre is null" in q:
+            return [FakeRecord({"spotify_track_id": t["spotify_track_id"]}) for t in self.tracks if t.get("genre") is None]
 
         # check_duplicate step 1: every copy of this exact track, with its playlist status and kept mark
         if "left join kept_duplicates" in q and "t.spotify_track_id = $1" in q:
@@ -320,6 +325,16 @@ class FakeStore:
 
         if "select id from tracks where spotify_track_id = $1" in q:
             return next((t["id"] for t in self.tracks if t["spotify_track_id"] == args[0]), None)
+
+        if "select genre from tracks where spotify_track_id = $1" in q:
+            return next((t.get("genre") for t in self.tracks if t["spotify_track_id"] == args[0]), None)
+
+        if "update tracks set genre = $1, genre_approved = true where id = $2 and genre is null returning id" in q:
+            for t in self.tracks:
+                if t["id"] == args[1] and t.get("genre") is None:
+                    t["genre"], t["genre_approved"] = args[0], True
+                    return t["id"]
+            return None
 
         if "select exists" in q and "users" in q:
             tid = args[0]
@@ -524,6 +539,20 @@ class FakeStore:
                 })
                 self._next_pt_id += 1
 
+        elif "update tracks set genre = $1 where spotify_track_id = $2" in q:
+            only_empty = "genre is null" in q
+            updated = 0
+            for t in self.tracks:
+                if t["spotify_track_id"] == args[1] and (t.get("genre") is None or not only_empty):
+                    t["genre"] = args[0]
+                    updated += 1
+            return f"UPDATE {updated}"  # the status asyncpg returns
+
+        elif "update tracks set genre = null where genre_approved is not true" in q:
+            for t in self.tracks:
+                if not t.get("genre_approved"):
+                    t["genre"] = None
+
         elif "update tracks set ai_facts" in q:
             facts = args[0]
             track_id = args[1]
@@ -605,6 +634,14 @@ class FakePlaylistItems:
 
 
 # --- Fixtures ---
+
+@pytest.fixture(autouse=True)
+def no_real_genre_lookups(monkeypatch):
+    """Tests never reach Last.fm or Anthropic, whatever keys the local .env holds."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "lastfm_api_key", "")
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+
 
 @pytest.fixture
 def store():

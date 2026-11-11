@@ -675,3 +675,26 @@ class TestIntegration:
         for i in range(28):
             t = store.get_track(1, f"t{i}")
             assert t["ai_facts"] == "AI fact", f"Track t{i} missing facts"
+
+
+# ============================================================
+# A track listed twice in the playlist
+# ============================================================
+
+def test_a_track_listed_twice_gets_one_dropped_before_warning(store, fake_pool):
+    store.add_playlist(id=1, spotify_id="sp1", name="PL1")
+    item = make_item(make_track("t1", name="Song", artist="X"), added_by="ann")
+    sp = AsyncMock()
+    sp.playlist_items.return_value = FakePlaylistItems(items=[item, item])
+    dropped = [{"playlist": "Old", "date": "01/01/2026", "added_by": "@ann"}]
+    drop_warn = AsyncMock()
+    module = "app.services.duplicate_watcher"
+
+    with patch(f"{module}.get_spotify", AsyncMock(return_value=sp)), \
+            patch(f"{module}.check_duplicate", AsyncMock(return_value=[])), \
+            patch(f"{module}.get_track_isrc", AsyncMock(return_value=None)), \
+            patch(f"{module}.resolve_and_save_genre", AsyncMock(return_value="rock")), \
+            patch(f"{module}.check_previously_dropped", AsyncMock(return_value=dropped)):
+        run(DuplicateWatcher(fake_pool, AsyncMock(), drop_warn_callback=drop_warn)._check_playlists())
+
+    drop_warn.assert_awaited_once()

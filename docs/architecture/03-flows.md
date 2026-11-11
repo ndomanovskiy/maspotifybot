@@ -156,14 +156,18 @@ sequenceDiagram
                 opt New track that is not a duplicate
                     DW->>DB: INSERT tracks + playlist_tracks
                     DW->>GR: resolve_and_save_genre(track)
-                    GR->>Spotify: Get artist genres
+                    Note over GR: Keep a saved genre, else Last.fm track tags → Last.fm artist tags → Claude
                     GR->>DB: UPDATE genre
+                    opt Nobody knows the genre, and Last.fm and AI both answered
+                        DW->>User: Ask whoever added it: genre buttons with ticks, 💾 Сохранить / 🤷 Не знаю
+                    end
                     DW->>User: Dropped in a past session? Ask ✅ Оставить / 🗑 Убрать (not thematic, not kept)
                 end
             end
             DW->>DB: Delete playlist_tracks and kept_duplicates rows of tracks gone from the playlist
         end
         Note over User,DB: «Оставить» stores a kept_duplicates row for this playlist while it is open. «Удалить» removes the track and that row.
+        Note over User,DB: Genre question: «Сохранить» saves the ticked genres, marked genre_approved, only if the track still has none. The answer names the genre playlists the track goes to under the genre hierarchy. «Не знаю», a track added by an account the bot does not know, or Last.fm or AI not answering leaves it without a genre (listed in /playlist status).
 
         Note over DW: Also generate AI facts
         DW->>DB: Get tracks without ai_facts (upcoming playlist)
@@ -266,7 +270,7 @@ sequenceDiagram
         loop Each track
             PL->>DB: INSERT playlist_tracks
             PL->>GR: resolve_and_save_genre(track)
-            GR->>Spotify: Get artist → genres
+            Note over GR: Keep a saved genre, else Last.fm track tags → Last.fm artist tags → Claude
             GR->>DB: UPDATE genre
         end
     end

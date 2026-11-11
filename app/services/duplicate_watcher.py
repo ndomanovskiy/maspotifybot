@@ -20,12 +20,13 @@ log = logging.getLogger(__name__)
 
 class DuplicateWatcher:
     def __init__(self, pool: asyncpg.Pool, notify_callback, confirm_callback=None,
-                 drop_warn_callback=None, sibling_warn_callback=None):
+                 drop_warn_callback=None, sibling_warn_callback=None, genre_ask_callback=None):
         self._pool = pool
         self._notify = notify_callback
         self._confirm = confirm_callback
         self._drop_warn = drop_warn_callback
         self._sibling_warn = sibling_warn_callback
+        self._genre_ask = genre_ask_callback
         self._running = False
 
     async def start(self):
@@ -92,6 +93,27 @@ class DuplicateWatcher:
             if row:
                 return row["telegram_id"], display_name(row["telegram_username"], row["telegram_name"])
         return None, None
+
+    async def _ask_genre(self, added_by: str | None, track_db_id: int, track, track_artist: str,
+                         playlist_name: str) -> None:
+        """Ask whoever added the track for its genre. Nobody else is asked."""
+        if not self._genre_ask:
+            return
+        try:
+            telegram_id = await self._resolve_telegram_id(added_by)
+            if telegram_id is None:
+                log.info(f"No genre for '{track.name}' and nobody to ask: added by {added_by or 'unknown'}")
+                return
+            await self._genre_ask(
+                telegram_id=telegram_id,
+                track_db_id=track_db_id,
+                track_title=track.name,
+                artist=track_artist,
+                track_id=track.id,
+                playlist_name=playlist_name,
+            )
+        except Exception as e:
+            log.warning(f"Failed to ask about the genre of '{track.name}': {e}")
 
     async def _handle_duplicate(self, sp, pl, track, track_artist, real_duplicates,
                                 added_by, playlist_spotify_id, playlist_db_id):
@@ -243,23 +265,22 @@ class DuplicateWatcher:
                 log.warning(f"Failed to fetch playlist {pl['name']}: {e}")
                 continue
 
-            # Track IDs already checked for duplicates this cycle (avoid re-checking)
-            checked_ids: set[str] = set()
+            # A track listed twice in the playlist is handled once per pass
+            handled_ids: set[str] = set()
 
             for item in all_items:
-                if item.track is None or item.track.id is None:
+                if item.track is None or item.track.id is None or item.track.id in handled_ids:
                     continue
                 track = item.track
+                handled_ids.add(track.id)
                 added_by = item.added_by.id if item.added_by else None
                 track_artist = ", ".join(a.name for a in track.artists)
 
                 # Get ISRC once per track
                 isrc = extract_isrc(track)
 
-                # ── Step 1: Check duplicates (skip thematic, kept, already-checked) ──
-                if not is_thematic and track.id not in checked_ids and track.id not in kept_ids:
-                    checked_ids.add(track.id)
-
+                # ── Step 1: Check duplicates (skip thematic and kept) ──
+                if not is_thematic and track.id not in kept_ids:
                     if not isrc:
                         isrc = await get_track_isrc(track.id)
 
@@ -290,6 +311,7 @@ class DuplicateWatcher:
                     if not isrc and (is_thematic or track.id in kept_ids):  # step 1 skipped the lookup
                         isrc = await get_track_isrc(track.id)
 
+                    saved_id = None  # the track's id once both rows are saved
                     async with self._pool.acquire() as conn:
                         try:
                             track_db_id = await conn.fetchval(
@@ -314,14 +336,18 @@ class DuplicateWatcher:
                                 playlist_db_id, track_db_id, track.id, added_by,
                                 item.added_at if hasattr(item, "added_at") else None,
                             )
+                            saved_id = track_db_id
                         except Exception as e:
                             log.warning(f"Failed to save new track: {e}")
 
-                    # Resolve genre
+                    # Resolve genre; when nothing knows it, ask whoever added the track
                     try:
-                        await resolve_and_save_genre(self._pool, track)
+                        genre = await resolve_and_save_genre(self._pool, track)
                     except Exception as e:
                         log.warning(f"Failed to resolve genre for '{track.name}': {e}")
+                    else:
+                        if genre is None and saved_id is not None:
+                            await self._ask_genre(added_by, saved_id, track, track_artist, pl["name"])
 
                     # ── Step 3: Check drops/siblings (only for new non-duplicate tracks) ──
                     if not is_thematic and track.id not in kept_ids:

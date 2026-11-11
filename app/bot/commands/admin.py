@@ -688,9 +688,10 @@ async def on_backfill_genres(message: Message):
     reset = len(args) > 1 and args[1].strip().lower() == "reset"
 
     if reset:
+        # Genres people picked in the genre question stay: nothing would ask them again
         async with get_pool().acquire() as conn:
-            await conn.execute("UPDATE tracks SET genre = NULL")
-        await message.answer("🔄 Все жанры сброшены. Запускаю бэкфилл через Last.fm + AI...\n\n⚠️ Если бэкфилл прервётся — запусти /backfill_genres повторно.")
+            await conn.execute("UPDATE tracks SET genre = NULL WHERE genre_approved IS NOT TRUE")
+        await message.answer("🔄 Жанры сброшены, кроме выбранных людьми. Запускаю бэкфилл через Last.fm + AI...\n\n⚠️ Если бэкфилл прервётся — запусти /backfill_genres повторно.")
     else:
         await message.answer("⏳ Запускаю бэкфилл жанров (только пустые)...")
 

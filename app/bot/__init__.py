@@ -13,6 +13,7 @@ from app.bot.core import bot, dp, set_pool, is_admin, send, reply
 from app.bot.duplicate_messages import (
     auto_removed_text, dropped_before_text, possible_duplicate_text, sibling_text,
 )
+from app.bot.genre_question import ask_genre
 from app.bot.playlist_notify import offer_notification
 from app.bot.session_manager import session
 from app.bot.commands.user import router as user_router
@@ -179,6 +180,7 @@ async def setup_bot(pool):
         confirm_callback=on_fuzzy_duplicate_confirm,
         drop_warn_callback=on_drop_warn,
         sibling_warn_callback=on_sibling_warn,
+        genre_ask_callback=ask_genre,
     )
     asyncio.create_task(watcher.start())
 

@@ -18,6 +18,7 @@ from app.bot.core import (
     get_pool, is_admin, is_registered,
     require_admin_callback, send, safe_int, _NO_PREVIEW,
 )
+from app.bot.genre_question import handle_callback as handle_genre_question
 from app.bot.playlist_notify import handle_callback as handle_playlist_notify, offer_notification
 from app.bot.session_manager import session
 from app.utils import escape_html
@@ -458,6 +459,16 @@ async def on_create_playlist(callback: CallbackQuery):
 @require_admin_callback
 async def on_playlist_notify(callback: CallbackQuery):
     await handle_playlist_notify(callback)
+
+
+# ── Genre question to whoever added a track ─────────────────────
+
+@router.callback_query(F.data.startswith("gnr:"))
+async def on_genre_question(callback: CallbackQuery):
+    if not await is_registered(callback.from_user.id):
+        await callback.answer("⛔ Только для участников", show_alert=True)
+        return
+    await handle_genre_question(callback)
 
 
 # ── Theme input ─────────────────────────────────────────────────

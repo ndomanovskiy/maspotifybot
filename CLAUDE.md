@@ -5,7 +5,7 @@ Collaborative music listening Telegram bot for TURDOM community. Users add track
 ## Stack
 
 - **Python 3.12**, aiogram v3 (Telegram), tekore (Spotify async), asyncpg (PostgreSQL)
-- **AI:** Claude Sonnet for track facts, session recap commentary and easter egg analysis, with no fallback: when the Anthropic call fails, those AI-written parts come out empty (the recap still sends its stats, the teaser has a fixed text). GPT-4o-mini for genres.
+- **AI:** Claude Sonnet for track facts, session recap commentary and easter egg analysis, with no fallback: when the Anthropic call fails, those AI-written parts come out empty (the recap still sends its stats, the teaser has a fixed text). Genres: Last.fm tags, then Claude; when neither knows, the bot asks whoever added the track. The bot does not use OpenAI.
 - **Deploy:** local Docker on the owner's PC since 2026-09-30 (`docker compose up -d --build bot`). Spotify traffic exits through the host's Clash Verge.
 
 ## Project Structure
@@ -21,6 +21,7 @@ app/
 │   ├── session_manager.py  — SessionManager singleton (all session state)
 │   ├── callbacks.py        — Callback query handlers
 │   ├── playlist_notify.py  — Admin picker of who to notify about a new playlist
+│   ├── genre_question.py   — Asks whoever added a track for its genre when nobody knows it
 │   ├── duplicate_messages.py — Texts of the duplicate-check messages (escaped HTML)
 │   └── commands/
 │       ├── user.py         — User commands (/start, /join, /stats, etc.)
@@ -70,9 +71,10 @@ Never use bare `except Exception: pass`. Always log: `except Exception as e: log
 | `app/bot/core.py` | 151 | Shared infrastructure, helpers, decorators |
 | `app/bot/session_manager.py` | 695 | SessionManager — all session lifecycle |
 | `app/bot/commands/user.py` | 799 | User-facing commands |
-| `app/bot/commands/admin.py` | 757 | Admin commands |
-| `app/bot/callbacks.py` | 643 | All callback handlers |
+| `app/bot/commands/admin.py` | 758 | Admin commands |
+| `app/bot/callbacks.py` | 654 | All callback handlers |
 | `app/bot/playlist_notify.py` | 193 | New playlist notification picker |
+| `app/bot/genre_question.py` | 194 | Genre question to whoever added a track |
 | `app/bot/duplicate_messages.py` | 118 | Duplicate-check message texts |
 | `app/services/facts.py` | 184 | Hand-written track facts: check and save |
 | `app/services/admin_commands.py` | 737 | Distribute, recap, close, create_next |

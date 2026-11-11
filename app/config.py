@@ -16,7 +16,6 @@ class Settings(BaseSettings):
 
     # AI
     anthropic_api_key: str = ""
-    openai_api_key: str = ""
 
     # Last.fm
     lastfm_api_key: str = ""
@@ -25,7 +24,8 @@ class Settings(BaseSettings):
     # Voting
     vote_drop_threshold: int = 2
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # A key the bot no longer uses (OPENAI_API_KEY) may stay in .env without stopping the start
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

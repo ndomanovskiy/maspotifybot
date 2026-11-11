@@ -24,6 +24,22 @@ GENRE_MAP = {
     "TURDOM Phonk": ["phonk"],
 }
 
+# The tag saved when a person picks a genre by hand: classify_track_multi leads each one
+# back to its own playlist and nowhere else. "hip-hop" or "dnb" would match nothing.
+PICK_TAGS = {
+    "TURDOM Electronic": "electronic",
+    "TURDOM Pop": "pop",
+    "TURDOM Metal": "metal",
+    "TURDOM Rock": "rock",
+    "TURDOM Hip-Hop": "hip hop",
+    "TURDOM Indie": "indie",
+    "TURDOM R&B": "r&b",
+    "TURDOM DnB": "drum and bass",
+    "TURDOM Chill": "chill",
+    "TURDOM Soundtrack": "soundtrack",
+    "TURDOM Phonk": "phonk",
+}
+
 # Hierarchy: specific genre suppresses its parent.
 # If a track matches Metal, don't also add to Rock.
 _GENRE_HIERARCHY = {
@@ -31,6 +47,11 @@ _GENRE_HIERARCHY = {
     "TURDOM DnB": {"TURDOM Electronic"},   # dnb suppresses electronic
     "TURDOM R&B": {"TURDOM Pop"},           # r&b suppresses pop
 }
+
+
+def suppressing_genre(playlist: str, chosen: list[str]) -> str | None:
+    """The playlist among `chosen` that keeps a track out of `playlist` by the hierarchy, if any."""
+    return next((specific for specific in chosen if playlist in _GENRE_HIERARCHY.get(specific, ())), None)
 
 
 def classify_track(genre_str: str) -> str | None:
